@@ -1,4 +1,49 @@
 
+# G-Control — PXLABS Edition
+
+> **This is the PXLABS fork of QGroundControl** — a customised GCS for the Vind-Roz drone system (RPi5 companion + PX4 + WFB-NG relay).
+> Built on **QGroundControl v5.0.8** with additive-only integration. No upstream QGC code is removed or replaced.
+
+| | |
+|---|---|
+| **App name** | G-Control |
+| **Base** | QGroundControl v5.0.8 |
+| **Branch** | `PXLABS-v2.1-integration` |
+| **Release** | `release/PXLABS-v2.1` · tag `PXLABS-v2.1.0` |
+| **Build** | VS2022 + Qt 6.8.3 + GStreamer 1.22.12 |
+| **Companion** | Vind-Roz · RPi5 8GB · Ubuntu 24.04 · ROS2 Jazzy · PX4 v1.16.0-rc1 |
+| **Relay** | Vind-Rly · RPi5 · Ubuntu 24.04 · wifibroadcast@gs |
+
+## PXLABS Features
+
+- **System Control panel** — right-edge slide-out: companion + relay power, SSH terminal, WFB standalone/cluster mode switch with live status glyph on pull tab
+- **Air-TX Temp chip** — live WFB RF card temperature in toolbar (green/orange/red colour-coded)
+- **Connection Status chips** — Comp + Relay reachability dots in toolbar, auto-refresh every 30 s
+- **Camera switch panel** — draggable front/bottom/split-front-bottom/split-bottom-front
+- **Settings pages** — Connection (SSH config), PXLABS Settings, Companion Control, Relay Station
+
+## Quick Start
+
+```
+1. Build   →  run build_pxlabs.bat  (requires VS2022 + Qt 6.8.3 in PATH)
+2. Deploy  →  deploy_dlls.bat runs automatically after build
+3. Launch  →  Launch-GControl.bat  (sets GStreamer env vars)
+4. Setup   →  Settings → Connection → enter SSH credentials → Apply
+```
+
+## Documentation
+
+For the full technical change log, new files added, CLI reference, QML patterns, and known issues:
+
+**[PXLABS_CHANGES.md](PXLABS_CHANGES.md)**
+
+## Reference
+
+Original unmodified QGC v5.0.8 is kept at `E:\qgroundcontrol` (local reference only).
+Upstream: [github.com/mavlink/qgroundcontrol](https://github.com/mavlink/qgroundcontrol)
+
+---
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/Dronecode/UX-Design/35d8148a8a0559cd4bcf50bfa2c94614983cce91/QGC/Branding/Deliverables/QGC_RGB_Logo_Horizontal_Positive_PREFERRED/QGC_RGB_Logo_Horizontal_Positive_PREFERRED.svg" alt="QGroundControl Logo" width="500">
 </p>
