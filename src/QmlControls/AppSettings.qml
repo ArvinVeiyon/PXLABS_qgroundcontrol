@@ -18,6 +18,8 @@ import QGroundControl.Controls
 import QGroundControl.ScreenTools
 import QGroundControl.AppSettings
 
+// PXLABS — import our pages model
+
 Rectangle {
     id:     settingsView
     color:  qgcPal.window
@@ -61,7 +63,8 @@ Rectangle {
     }
 
 
-    SettingsPagesModel { id: settingsPagesModel }
+    SettingsPagesModel  { id: settingsPagesModel  }
+    PXLABSPagesModel    { id: pxlabsPagesModel    }
 
     QGCFlickable {
         id:                 buttonList
@@ -118,6 +121,44 @@ Rectangle {
                     }
                 }
             }
+
+            // PXLABS — System section separator
+            Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: qgcPal.windowShade
+            }
+            QGCLabel {
+                Layout.fillWidth:   true
+                Layout.leftMargin:  _defaultTextWidth * 0.75
+                text:               qsTr("System")
+                font.pointSize:     ScreenTools.smallFontPointSize
+                color:              qgcPal.colorGrey
+            }
+
+            // PXLABS — System settings buttons
+            // Same parent (buttonColumn) → autoExclusive groups with native buttons above
+            Repeater {
+                id:    pxlabsButtonRepeater
+                model: pxlabsPagesModel
+
+                SettingsButton {
+                    Layout.fillWidth: true
+                    text:             name
+                    icon.source:      iconUrl
+                    visible:          pageVisible()
+
+                    onClicked: {
+                        if (mainWindow.allowViewSwitch()) {
+                            if (rightPanel.source !== url) {
+                                rightPanel.source = url
+                            }
+                            checked = true
+                        }
+                    }
+                }
+            }
+            // end PXLABS
         }
     }
 

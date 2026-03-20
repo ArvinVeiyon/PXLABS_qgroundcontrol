@@ -5,6 +5,13 @@ qt_add_qml_module(AppSettingsModule
     VERSION 1.0
     RESOURCE_PREFIX /qml
     QML_FILES
+        # PXLABS integration — additive
+        ConnectionControl.qml
+        PXLABSSettings.qml
+        CompanionControl.qml
+        RelayControl.qml
+        PXLABSPagesModel.qml
+        # end PXLABS
         ADSBServerSettings.qml
         BluetoothSettings.qml
         DebugWindow.qml

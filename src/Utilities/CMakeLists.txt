@@ -1,5 +1,9 @@
 target_sources(${CMAKE_PROJECT_NAME}
     PRIVATE
+        # PXLABS integration — additive
+        PXLABSCommandRunner.cc
+        PXLABSCommandRunner.h
+        # end PXLABS
         DeviceInfo.cc
         DeviceInfo.h
         JsonHelper.cc

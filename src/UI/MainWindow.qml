@@ -161,6 +161,11 @@ ApplicationWindow {
         }
     }
 
+    // PXLABS — System Settings top-level entry
+    function showSystemSettings() {
+        showTool(qsTr("System Settings"), "qrc:/qml/QGroundControl/Controls/SystemSettings.qml", "/InstrumentValueIcons/drone.svg")
+    }
+
     //-------------------------------------------------------------------------
     //-- Global simple message dialog
 
@@ -377,6 +382,21 @@ ApplicationWindow {
                                 }
                             }
                         }
+
+                        // PXLABS — System Settings entry
+                        SubMenuButton {
+                            height:           toolSelectDialog._toolButtonHeight
+                            Layout.fillWidth: true
+                            text:             qsTr("System Settings")
+                            imageResource:    "/InstrumentValueIcons/drone.svg"
+                            onClicked: {
+                                if (mainWindow.allowViewSwitch()) {
+                                    mainWindow.closeIndicatorDrawer()
+                                    mainWindow.showSystemSettings()
+                                }
+                            }
+                        }
+                        // end PXLABS
 
                         SubMenuButton {
                             id:                 settingsButton

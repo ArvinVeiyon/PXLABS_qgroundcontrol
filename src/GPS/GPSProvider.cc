@@ -220,7 +220,12 @@ GPSBaseStationSupport *GPSProvider::_connectGPS()
         baudrate = 0;
         break;
     case GPSType::u_blox:
-        gpsDriver = new GPSDriverUBX(GPSDriverUBX::Interface::UART, &_callbackEntry, this, &_sensorGps, &_satelliteInfo);
+        { // PXLABS build fix: PX4-GPSDrivers main now requires Settings param
+          // Original: new GPSDriverUBX(Interface::UART, cb, this, gps, sat) — 5 args
+        GPSDriverUBX::Settings _ubxSettings{};
+        _ubxSettings.mode = GPSDriverUBX::UBXMode::Normal;
+        gpsDriver = new GPSDriverUBX(GPSDriverUBX::Interface::UART, &_callbackEntry, this, &_sensorGps, &_satelliteInfo, _ubxSettings);
+        }
         baudrate = 0;
         break;
     case GPSType::femto:

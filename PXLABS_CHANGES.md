@@ -1,0 +1,253 @@
+# PXLABS Integration — Native QGC Change Log
+
+**Rule: ADDITIONS ONLY. No removal of any existing QGC code ever.**
+
+All PXLABS additions are marked with `// PXLABS integration — additive` comments.
+
+---
+
+## Native Files Touched (Additions Only)
+
+### 1. `src/QGCApplication.cc`
+- **Line added (~72):** `#include "PXLABSCommandRunner.h"`
+- **Lines added (~310):** `qmlRegisterSingletonType<PXLABSCommandRunner>(...)` — registers `PXLABSRunner` singleton to QML URI `QGroundControl.PXLABS`
+
+### 2. `src/Utilities/CMakeLists.txt`
+- **Lines added:** `PXLABSCommandRunner.cc` and `PXLABSCommandRunner.h` added to `target_sources`
+
+### 3. `src/UI/AppSettings/CMakeLists.txt`
+- **Lines added:** `ConnectionControl.qml`, `PXLABSSettings.qml`, `CompanionControl.qml`, `RelayControl.qml` added to `QML_FILES`
+
+### 4. `src/GPS/GPSProvider.cc`
+- **Lines added (~222):** `GPSDriverUBX::Settings _ubxSettings{}` + `_ubxSettings.mode = UBXMode::Normal` added before existing constructor call. Constructor updated to pass `_ubxSettings` as 6th arg — required because `PX4-GPSDrivers main` branch changed the API. Original 5-arg call preserved as comment. Build cannot compile without this.
+
+### 5. `src/UI/AppSettings/SettingsPagesModel.qml`
+- **Lines added:** 4 `ListElement` entries — Connection, PXLABS Settings, Companion, Relay Station — inserted before Mock Link
+
+### 6. `src/FlightDisplay/FlyViewCustomLayer.qml` *(REPLACED — was empty stub)*
+- Right-edge expandable **System Control** panel (‹/› tab, slides with animation)
+  - Companion: Restart / Shutdown buttons (with confirmation dialog)
+  - Relay: Restart / Shutdown buttons (with confirmation dialog)
+  - SSH Terminal buttons for Companion and Relay (opens new CMD window via `start "" cmd /k ssh ...`)
+  - **WFB Mode section**: Standalone (green) + Cluster (blue) buttons; active mode highlighted; calls `relay wfb switch --mode` then 4s timer then `relay wfb refresh` to verify
+- **Left-edge "Transmission Mode" panel** (‹/› tab on left, purple accent):
+  - Dish antenna drawn with Qt Canvas 2D safe methods only (`bezierCurveTo`, `arc`, `lineTo`, `createLinearGradient`) — NO `ellipse()`/`roundRect()` (not in Qt Canvas)
+  - Active mode badge: "◉ STANDALONE — Active" / "⬡ CLUSTER — Active" / "⊙ No Mode Set"
+  - Standalone (green) + Cluster (blue) mode buttons with `● ACTIVE` indicator
+  - On open: `Qt.callLater(_checkWfbMode)` to sync status from relay
+  - `wfbCheckTimer` (4s, non-repeating) waits after mode switch before re-checking
+- **WFB mode detection**: `relay wfb refresh` → parse `SA:active/inactive` + `CA:active/inactive` lines
+  - `SA:active` + `CA:inactive` → "standalone"
+  - `CA:active` + `SA:inactive` → "cluster"
+  - Both active → defaults to "standalone"
+- **WiFi temp chip REMOVED from this file** — moved to `FlyViewToolBar.qml` (see §7 below)
+- Draggable camera switch panel: Front / Bottom / Split F→B / Split B→F
+- Panel position saved/restored via `QGroundControl.saveGlobalSetting/loadGlobalSetting`
+
+### 7. `src/QmlControls/FlyViewToolBar.qml` *(MODIFIED — additive)*
+- Added `import QGroundControl.PXLABS`
+- WiFi temp chip (`pxWifiChip` Rectangle, z:20) placed directly in toolbar, anchored to `brandImage.left` (or `parent.right` if logo hidden):
+  - Shows "WiFi X.X°C" color-coded: green (<60°C), orange (60–74°C), red (≥75°C), blue (N/A/—/…)
+  - "↻" refresh icon (shows "…" during fetch); clicking chip triggers manual refresh
+  - `pxlabs_wifi_temp_enabled` setting gates auto-poll Timer
+  - `pxlabs_wifi_temp_interval` setting (seconds) controls Timer interval (min 10s)
+  - `_pxWifiFetch` flag gates PXLABSRunner Connections so toolbar only consumes `wifi-temp` responses
+  - `Component.onCompleted: { _pxLoadSettings(); Qt.callLater(_pxFetchWifi) }` — loads settings and fetches on startup
+
+---
+
+## New Files Added (All PXLABS, zero QGC native)
+
+| File | Purpose |
+|------|---------|
+| `src/Utilities/PXLABSCommandRunner.h` | C++ QObject — QProcess wrapper, exposes `PXLABSRunner` singleton to QML |
+| `src/Utilities/PXLABSCommandRunner.cc` | Implementation — runs `python pxlabs_cli.py <args>`, emits signals |
+| `src/UI/AppSettings/ConnectionControl.qml` | **Settings page — SSH config for companion + relay. CONFIGURE FIRST before using CLI. Also: Periodic Connection Check settings + Wi-Fi Temperature Polling settings.** |
+| `src/UI/AppSettings/PXLABSSettings.qml` | Settings page — Python path, CLI path, Test CLI |
+| `src/UI/AppSettings/CompanionControl.qml` | Settings page — Camera switch, Capture, Camera Device (Advanced), System, Services. Record section removed (QGC has its own). |
+| `src/UI/AppSettings/RelayControl.qml` | Settings page — WFB mode, NICs, System, Services |
+| `tools/pxlabs_cli.py` | CLI bridge — SSH to companion/relay |
+| `build_pxlabs.bat` | Build script — VS2022 + Qt 6.8.3, Z: subst for space-free path |
+| `deploy_dlls.bat` | **Run after EVERY build** — copies GStreamer DLLs + Qt DLLs + pxlabs_cli.py to build_clean/Release |
+| `Launch-GControl.bat` | **Always use to launch** — sets GST_PLUGIN_PATH, GST_REGISTRY_REUSE_PLUGIN_SCANNER=no |
+| `Launch-GControl-Debug.bat` | Debug launch — writes GStreamer log to Release\gst_debug.log |
+| `PXLABS_CHANGES.md` | This file — tracks all native QGC changes |
+
+---
+
+## Launch Order (IMPORTANT)
+
+1. Build: run `build_pxlabs.bat` from CMD (requires MSVC environment — do NOT run from bash)
+2. Deploy: run `deploy_dlls.bat` — **MUST do this after every build**, copies DLLs + pxlabs_cli.py
+3. Launch: use `Launch-GControl.bat` — sets required GStreamer env vars
+4. First run: go to Settings → Connection, enter SSH credentials, click Apply Companion + Apply Relay
+
+---
+
+## QML Import Pattern
+
+All PXLABS QML pages import:
+```qml
+import QGroundControl.PXLABS
+```
+Then call: `PXLABSRunner.run("companion front-switch")` etc.
+
+**C++ prepends** `python <cli_path>` — QML passes args only, not the full command.
+
+Signals available on `PXLABSRunner`:
+- `outputReady(text)` — stdout lines as they arrive
+- `commandFinished(exitCode)` — process exited
+- `commandFailed(errorText)` — process failed to start
+
+---
+
+## CLI Command Reference
+
+```
+# Companion camera
+python pxlabs_cli.py companion front-switch
+python pxlabs_cli.py companion bottom-switch
+python pxlabs_cli.py companion split-front-bottom
+python pxlabs_cli.py companion split-bottom-front
+python pxlabs_cli.py companion camera-apply --device /dev/video0
+python pxlabs_cli.py companion camera-query --device /dev/video0
+
+# Companion capture
+python pxlabs_cli.py companion capture-front
+python pxlabs_cli.py companion capture-bottom
+
+# Companion system
+python pxlabs_cli.py companion reboot
+python pxlabs_cli.py companion shutdown
+python pxlabs_cli.py companion ssh-terminal
+
+# Companion misc
+python pxlabs_cli.py companion wifi-temp
+
+# Relay WFB
+python pxlabs_cli.py relay wfb refresh
+python pxlabs_cli.py relay wfb switch --mode standalone|cluster
+python pxlabs_cli.py relay wfb status
+python pxlabs_cli.py relay wfb logs
+python pxlabs_cli.py relay wfb view-config
+python pxlabs_cli.py relay wfb list-nics
+python pxlabs_cli.py relay wfb set-nics --nics <nic>
+
+# Relay system
+python pxlabs_cli.py relay reboot
+python pxlabs_cli.py relay shutdown
+python pxlabs_cli.py relay ssh-terminal
+
+# Services
+python pxlabs_cli.py services refresh --target companion|relay
+python pxlabs_cli.py services start|stop|restart|enable|disable --target companion|relay --service <name>
+
+# Config
+python pxlabs_cli.py config show
+python pxlabs_cli.py config set \
+    --primary-ip 10.5.6.101 --primary-port 2222 \
+    --secondary-ip <ip> --secondary-port 22 \
+    --username roz --companion-password <pass> \
+    --relay-ip 10.5.6.101 --relay-ssh-port 22 \
+    --relay-username vind-admin --relay-password <pass>
+```
+
+---
+
+## GStreamer Notes
+
+- GStreamer 1.22.12 at `E:\gstreamer\1.0\msvc_x86_64`
+- No `gstlibav.dll` — H264 decoded via `gstd3d11.dll` (d3d11h264dec)
+- `deploy_dlls.bat` creates `build_clean\lib\gstreamer-1.0` — required by GStreamer.cc for internal path resolution
+- `Launch-GControl.bat` sets `GST_PLUGIN_PATH` + `GST_REGISTRY_REUSE_PLUGIN_SCANNER=no`
+- For debug: use `Launch-GControl-Debug.bat` — writes `Release\gst_debug.log`
+
+---
+
+## Session Changes (2026-03-20 evening)
+
+### pxlabs_cli.py
+- Fixed `IndentationError`: missing `if action == "front-switch":` line was orphaned after ssh-terminal reorder
+- Added `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` at top — fixes UnicodeEncodeError when WFB status output contains `●` (U+25CF) under Windows cp1252
+- SSH terminal: changed to `start cmd /k ssh -p {port} {user}@{ip}` (no quotes around ssh command) — quoted form `start cmd /k "ssh..."` caused cmd to treat entire quoted string as program filename
+- `run_cmd`: added `flush=True` to both `print` calls — prevents output buffering under QProcess pipe mode
+- `wifi-temp`: added wfb-cli drone fallback (step B) between procfs and sysfs, matching old app's 3-step logic
+
+### PXLABSCommandRunner.cc
+- `_onFinished`: now drains remaining `readAllStandardOutput()` + `readAllStandardError()` and emits `outputReady` BEFORE emitting `commandFinished` — fixes race where buffered output arrived after QML already cleared the fetch flag
+
+### FlyViewCustomLayer.qml
+- **Left "Transmission Mode" panel completely removed** (dish Canvas, mode buttons, pull tab)
+- `_leftPanelOpen` and `_lpWidth` properties removed
+- Right "System Control" panel now contains all WFB controls: Standalone + Cluster buttons, ↻ Refresh button inline with "WFB Mode" label, active mode badge
+- WFB auto-check on panel open removed — was firing SSH call to relay every open
+
+---
+
+## Session Changes (2026-03-20 — v2.1 Release)
+
+### Air-TX Temp chip — renamed + fully working
+- Renamed "WiFi Temp" → **"Air-TX Temp"** (measures WFB RF card / rtl88x2eu temperature)
+- **Root cause of non-working temp fixed**: rewrote `wifi-temp` in `pxlabs_cli.py` to match standalone app logic exactly:
+  - Interface detection now reads `/etc/default/wifibroadcast` for real WFB NIC name first, falls back to procfs scan
+  - Step B (wfb-cli) now uses proper `XX°C / XX C` regex — was grabbing any number
+  - Each step uses its own `exec_command` on a persistent SSH connection — more reliable than single large shell script
+- `ssh_exec` now catches all connection exceptions and returns clean error instead of crashing Python with unhandled exception
+- `onOutputReady` in FlyViewToolBar now scans lines for a parseable float — robust to stderr mixed into `_lastOutput`
+
+### Connection Status chips added to toolbar
+- New **`Comp ●`** and **`Relay ●`** chips in FlyViewToolBar, left of Air-TX chip
+- Green = reachable, Red = unreachable, Grey = unknown
+- Auto-check 3s after startup, then every 30s; click ↻ to refresh manually
+- New `pxlabs_cli.py status` command — fast TCP socket check, no password needed, outputs `COMPANION:reachable/unreachable` + `RELAY:reachable/unreachable`
+- Chip colors use `qgcPal` palette to match QGC dark theme (no more custom blue)
+
+### System Control panel — layout improvements
+- Panel top margin pushed down below QGC camera controls (was overlapping)
+- Pull tab moved to top of panel (was vertically centered)
+- Pull tab now shows **WFB mode glyph** (◉ green = standalone / ⬡ blue = cluster / ⊙ grey = unknown) when panel is closed
+- Button heights reduced (`2.5→2.1`, `2.2→1.85`) + spacing tightened — WFB Mode section now visible without scrolling
+
+---
+
+## Known Issues / Next Session TODO
+
+*(none — all previously known issues resolved)*
+
+---
+
+## Session Changes (2026-03-20)
+
+### ConnectionControl.qml — Added two new settings sections
+- **Periodic Connection Check**: enable toggle, interval (sec), timeout (sec), max attempts — saves to `pxlabs_conn_check_*` global settings
+- **Wi-Fi Temperature Polling**: enable toggle, poll interval (sec) — saves `pxlabs_wifi_temp_enabled` + `pxlabs_wifi_temp_interval`
+
+### FlyViewToolBar.qml — WiFi temp chip moved here from FlyViewCustomLayer
+- Root cause: FlyViewCustomLayer renders BELOW the QGC toolbar layer — chip at toolbar-height Y was hidden behind it
+- Fix: injected chip directly into FlyViewToolBar.qml at z:20, anchored to `brandImage.left`
+- Chip reads `pxlabs_wifi_temp_enabled` / `pxlabs_wifi_temp_interval` on startup
+
+### FlyViewCustomLayer.qml — System Control + Transmission Mode panels
+- Renamed panel to "System Control" (was "System Power")
+- Added SSH Terminal buttons (companion + relay) to System Control panel
+- Added WFB Standalone/Cluster buttons to System Control panel (right side)
+- Added left-side "Transmission Mode" panel with dish antenna and mode buttons
+- WFB mode detection changed from `relay wfb status` → `relay wfb refresh` + SA/CA parsing
+- Canvas crash fix: removed `ctx.ellipse()` / `ctx.roundRect()` (not in Qt Canvas API) — rewrote with `bezierCurveTo` + `arc`
+- Property signal fix: wrapper `property string modeWatch: _root._wfbMode` avoids underscore signal naming issue
+- Post-switch delay: `wfbCheckTimer` (4s) replaces `Qt.callLater(Qt.callLater(...))` for reliable confirmation
+
+### pxlabs_cli.py — SSH terminal + wifi-temp fixes
+- `ssh-terminal` (companion + relay): moved BEFORE `get_password()` call — was blocked by missing-password early return
+- `ssh-terminal` Popen fix: `start "" cmd /k ssh -p {port} {username}@{ip}` — empty `""` = window title, `cmd` = program name (avoids `'"ssh..."' is not recognized` error)
+- Added `print(f"Opening SSH terminal: ssh -p {port} {username}@{ip}", flush=True)` before Popen
+- `wifi-temp`: moved before password check; returns `"N/A"` immediately if no password stored (avoids crash)
+
+---
+
+## SSH / Config Storage
+
+- SSH config JSON: `build_clean/Release/config/ssh_config.json` (auto-created by `config set`)
+- Passwords: Windows keyring, service = `"Drone-Control"`, account = username
+- Companion SSH: `roz@10.5.6.101:2222` (via relay tunnel) or `roz@10.5.5.87:22` (direct WFB)
+- Relay SSH: `vind-admin@10.5.6.101:22`

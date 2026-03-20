@@ -68,6 +68,7 @@ qt_add_qml_module(QGroundControlControlsModule
     QML_FILES
         AltModeDialog.qml
         AppSettings.qml
+        SystemSettings.qml  # PXLABS
         APMSubMotorDisplay.qml
         AppMessages.qml
         AutotuneUI.qml

@@ -69,6 +69,7 @@
 #include "Vehicle.h"
 #include "VehicleComponent.h"
 #include "VideoManager.h"
+#include "PXLABSCommandRunner.h" // PXLABS integration — additive
 
 #ifndef QGC_DISABLE_MAVLINK_INSPECTOR
 #include "MAVLinkInspectorController.h"
@@ -306,6 +307,9 @@ void QGCApplication::init()
     qmlRegisterType<JoystickConfigController>("QGroundControl.Controllers", 1, 0, "JoystickConfigController");
 
     (void) qmlRegisterSingletonType<ShapeFileHelper>("QGroundControl.ShapeFileHelper", 1, 0, "ShapeFileHelper", [](QQmlEngine *, QJSEngine *) { return new ShapeFileHelper(); });
+    // PXLABS integration — additive singleton
+    (void) qmlRegisterSingletonType<PXLABSCommandRunner>("QGroundControl.PXLABS", 1, 0, "PXLABSRunner", [](QQmlEngine *, QJSEngine *) { return new PXLABSCommandRunner(); });
+    // end PXLABS
 
     qmlRegisterSingletonType<QGCMAVLink>("MAVLink", 1, 0, "MAVLink", mavlinkSingletonFactory);
 

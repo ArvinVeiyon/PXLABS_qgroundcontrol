@@ -18,6 +18,7 @@ import QGroundControl.Palette
 import QGroundControl.MultiVehicleManager
 import QGroundControl.ScreenTools
 import QGroundControl.Controllers
+import QGroundControl.PXLABS  // PXLABS
 
 Rectangle {
     id:     _root
@@ -28,6 +29,102 @@ Rectangle {
     property var    _activeVehicle:     QGroundControl.multiVehicleManager.activeVehicle
     property bool   _communicationLost: _activeVehicle ? _activeVehicle.vehicleLinkManager.communicationLost : false
     property color  _mainStatusBGColor: qgcPal.brandingPurple
+
+    // PXLABS: Air-TX temp state
+    property string _pxWifiTemp:     "—"
+    property bool   _pxWifiFetch:    false
+    property bool   _pxWifiEnabled:  false
+    property int    _pxWifiInterval: 60
+
+    // PXLABS: Connection status state
+    property string _compStatus:  "—"   // "reachable" | "unreachable" | "—"
+    property string _relayStatus: "—"
+    property bool   _statusFetch: false
+
+    function _pxFetchWifi() {
+        if (PXLABSRunner.running) return
+        _pxWifiFetch = true
+        _pxWifiTemp  = "…"
+        PXLABSRunner.run("companion wifi-temp")
+    }
+    function _fetchStatus() {
+        if (PXLABSRunner.running) return
+        _statusFetch = true
+        PXLABSRunner.run("status")
+    }
+    function _pxLoadSettings() {
+        _pxWifiEnabled  = (QGroundControl.loadGlobalSetting("pxlabs_wifi_temp_enabled",  "false") === "true")
+        const s = parseInt(QGroundControl.loadGlobalSetting("pxlabs_wifi_temp_interval", "60"))
+        _pxWifiInterval = isNaN(s) ? 60 : Math.max(10, s)
+    }
+
+    // Air-TX temp auto-poll
+    Timer {
+        interval: Math.max(10, _root._pxWifiInterval) * 1000
+        repeat:   true
+        running:  _root._pxWifiEnabled
+        onTriggered: _root._pxFetchWifi()
+    }
+    // Connection status: one-shot 3 s after startup (lets wifi-temp go first)
+    Timer {
+        id:       pxStatusStartupTimer
+        interval: 3000
+        repeat:   false
+        running:  false
+        onTriggered: _root._fetchStatus()
+    }
+    // Connection status: periodic check every 30 s
+    Timer {
+        interval: 30000
+        repeat:   true
+        running:  true
+        onTriggered: _root._fetchStatus()
+    }
+
+    Connections {
+        target: PXLABSRunner
+        function onOutputReady(text) {
+            if (_root._statusFetch) {
+                const lines = text.split('\n')
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim()
+                    if (line.startsWith("COMPANION:"))  _root._compStatus  = line.substring(10)
+                    else if (line.startsWith("RELAY:")) _root._relayStatus = line.substring(6)
+                }
+                return
+            }
+            if (!_root._pxWifiFetch) return
+            // Scan every line for a parseable number — robust to stderr mixed into _lastOutput
+            const lines = text.split('\n')
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim()
+                if (line.length === 0) continue
+                const v = parseFloat(line)
+                if (!isNaN(v)) {
+                    _root._pxWifiTemp = line
+                    return
+                }
+            }
+        }
+        function onCommandFinished(exitCode) {
+            if (_root._statusFetch) { _root._statusFetch = false; return }
+            if (!_root._pxWifiFetch) return
+            _root._pxWifiFetch = false
+            if (exitCode !== 0 || _root._pxWifiTemp === "…") _root._pxWifiTemp = "N/A"
+        }
+        function onCommandFailed(errorText) {
+            if (_root._statusFetch) { _root._statusFetch = false; return }
+            if (!_root._pxWifiFetch) return
+            _root._pxWifiFetch = false
+            _root._pxWifiTemp = "N/A"
+        }
+    }
+
+    Component.onCompleted: {
+        _pxLoadSettings()
+        Qt.callLater(_pxFetchWifi)
+        pxStatusStartupTimer.start()
+    }
 
     function dropMainStatusIndicatorTool() {
         mainStatusIndicator.dropMainStatusIndicator();
@@ -100,8 +197,140 @@ Rectangle {
     }
 
     //-------------------------------------------------------------------------
+    //-- PXLABS: Connection Status Chip (Companion + Relay, left of Air-TX chip)
+    Rectangle {
+        id:                     pxConnChip
+        z:                      20
+        anchors.right:          pxAirTxChip.left
+        anchors.rightMargin:    ScreenTools.defaultFontPixelWidth * 0.5
+        anchors.verticalCenter: parent.verticalCenter
+        height:                 ScreenTools.defaultFontPixelHeight * 1.5
+        width:                  pxConnRow.implicitWidth + ScreenTools.defaultFontPixelWidth * 2.0
+        radius:                 height * 0.3
+        color:                  qgcPal.toolbarBackground
+        border.color:           qgcPal.text
+        border.width:           1
+        opacity:                0.92
+
+        RowLayout {
+            id:               pxConnRow
+            anchors.centerIn: parent
+            spacing:          ScreenTools.defaultFontPixelWidth * 0.7
+
+            // Companion status
+            RowLayout {
+                spacing: ScreenTools.defaultFontPixelWidth * 0.25
+                QGCLabel {
+                    text:  "●"
+                    color: _root._compStatus === "reachable"   ? qgcPal.colorGreen :
+                           _root._compStatus === "unreachable" ? qgcPal.colorRed   : qgcPal.colorGrey
+                    font.pointSize: ScreenTools.smallFontPointSize
+                }
+                QGCLabel {
+                    text:           "Comp"
+                    color:          qgcPal.text
+                    font.pointSize: ScreenTools.smallFontPointSize
+                    font.bold:      true
+                }
+            }
+
+            // Divider
+            Rectangle {
+                width:  1
+                height: ScreenTools.defaultFontPixelHeight * 0.8
+                color:  qgcPal.text
+                opacity: 0.3
+            }
+
+            // Relay status
+            RowLayout {
+                spacing: ScreenTools.defaultFontPixelWidth * 0.25
+                QGCLabel {
+                    text:  "●"
+                    color: _root._relayStatus === "reachable"   ? qgcPal.colorGreen :
+                           _root._relayStatus === "unreachable" ? qgcPal.colorRed   : qgcPal.colorGrey
+                    font.pointSize: ScreenTools.smallFontPointSize
+                }
+                QGCLabel {
+                    text:           "Relay"
+                    color:          qgcPal.text
+                    font.pointSize: ScreenTools.smallFontPointSize
+                    font.bold:      true
+                }
+            }
+
+            // Refresh icon
+            QGCLabel {
+                text:           _root._statusFetch ? "…" : "↻"
+                color:          qgcPal.colorGrey
+                font.pointSize: ScreenTools.smallFontPointSize
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape:  Qt.PointingHandCursor
+            onClicked:    _root._fetchStatus()
+        }
+    }
+
+    //-------------------------------------------------------------------------
+    //-- PXLABS: Air-TX Temp Chip (left of brand logo)
+    Rectangle {
+        id:                     pxAirTxChip
+        z:                      20
+        anchors.right:          brandImage.visible ? brandImage.left : parent.right
+        anchors.rightMargin:    ScreenTools.defaultFontPixelWidth
+        anchors.verticalCenter: parent.verticalCenter
+        height:                 ScreenTools.defaultFontPixelHeight * 1.5
+        width:                  Math.max(pxAirTxRow.implicitWidth + ScreenTools.defaultFontPixelWidth * 2.4,
+                                         ScreenTools.defaultFontPixelWidth * 9)
+        radius:                 height * 0.3
+        color:                  qgcPal.toolbarBackground
+        border.color:           qgcPal.text
+        border.width:           1
+        opacity:                0.92
+
+        RowLayout {
+            id:               pxAirTxRow
+            anchors.centerIn: parent
+            spacing:          ScreenTools.defaultFontPixelWidth * 0.4
+
+            QGCLabel {
+                text: {
+                    const v = parseFloat(_root._pxWifiTemp)
+                    return isNaN(v) ? ("Air-TX " + _root._pxWifiTemp)
+                                    : ("Air-TX " + _root._pxWifiTemp + "°C")
+                }
+                color: {
+                    const v = parseFloat(_root._pxWifiTemp)
+                    if (isNaN(v))  return qgcPal.colorGrey
+                    if (v >= 75)   return qgcPal.colorRed
+                    if (v >= 60)   return qgcPal.colorOrange
+                    return qgcPal.colorGreen
+                }
+                font.pointSize: ScreenTools.smallFontPointSize
+                font.bold:      true
+            }
+
+            QGCLabel {
+                text:           _root._pxWifiFetch ? "…" : "↻"
+                color:          qgcPal.colorGrey
+                font.pointSize: ScreenTools.smallFontPointSize
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape:  Qt.PointingHandCursor
+            onClicked:    _root._pxFetchWifi()
+        }
+    }
+
+    //-------------------------------------------------------------------------
     //-- Branding Logo
     Image {
+        id:                     brandImage
         anchors.right:          parent.right
         anchors.top:            parent.top
         anchors.bottom:         parent.bottom
