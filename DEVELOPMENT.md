@@ -1,6 +1,6 @@
 # G-Control — Development Document
 
-Full architecture, design decisions, and development history for the PXLABS fork of QGroundControl.
+Full architecture, design decisions, and development history.
 For a raw file-by-file change log see `PXLABS_CHANGES.md`.
 
 ---
@@ -9,13 +9,14 @@ For a raw file-by-file change log see `PXLABS_CHANGES.md`.
 
 **G-Control** is a customised build of QGroundControl v5.0.8 for the **Vind-Roz** drone system.
 
-QGC covers standard GCS functions (MAVLink telemetry, mission planning, parameter tuning, video).
-G-Control adds a second layer on top: **remote management of the companion computer and relay station**
-over SSH, entirely from within the GCS window. The operator never needs a separate terminal.
+QGC provides the standard GCS layer: MAVLink telemetry, HUD, mission planning, parameter tuning, video display.
+G-Control adds a second operational layer on top: **remote management of the companion computer and relay station**
+directly from within the GCS window — camera switching, service control, WFB mode switching, SSH terminals,
+system power management — without the operator ever needing a separate terminal or app.
 
-Everything added is strictly **additive** — no native QGC file is deleted or restructured.
-All PXLABS-added code is in new files or clearly marked additive blocks in the two native files that
-were touched (`QGCApplication.cc` to register the singleton, `FlyViewToolBar.qml` for toolbar chips).
+Everything added is strictly **additive**. No native QGC file is deleted or restructured.
+All PXLABS code lives in new files, with two minimal additive hooks into native files
+(`QGCApplication.cc` for singleton registration, `FlyViewToolBar.qml` for toolbar chips).
 
 | | |
 |---|---|
@@ -24,14 +25,210 @@ were touched (`QGCApplication.cc` to register the singleton, `FlyViewToolBar.qml
 | GitHub | `https://github.com/ArvinVeiyon/PXLABS_qgroundcontrol` |
 | Build output | `E:\qgc-pxlabs\build_clean\Release\G-Control.exe` |
 | Installer | `installer\G-Control-Setup-v<version>.exe` |
-| Companion SSH | `roz@10.5.6.101:2222` (via relay tunnel) |
-| Relay SSH | `vind-admin@10.5.6.101:22` |
 
 ---
 
-## 2. System Architecture
+## 2. Full System — Hardware & Network
 
-### 2.1 High-Level Components
+### 2.1 Companion Computer — Vind-Roz
+
+| Item | Detail |
+|------|--------|
+| Board | Raspberry Pi 5 (8 GB) |
+| OS | Ubuntu 24.04 LTS |
+| ROS2 | Jazzy |
+| Flight Controller | Custom Pixhawk 6X-RT (NXP i.MX RT1176), PX4 v1.16.0-rc1 |
+| WFB NIC | rtl88x2eu (`wlx00c0caa578a9` — auto-detected via `wfb-nics`) |
+| System version | `sid.conf` v1.3.7 (2026-03-08) |
+| SSH (via relay) | `roz@10.5.6.101:2222` |
+| SSH (direct WFB) | `roz@10.5.5.87:22` |
+
+**UART Map (FC ↔ RPi5):**
+
+| Port | Role | Baud |
+|------|------|------|
+| `/dev/ttyAMA0` | FC MAVLink → mavlink-router | 921600 |
+| `/dev/ttyAMA2` | TFmini Plus lidar | 115200 |
+| `/dev/ttyAMA4` | FC uXRCE-DDS → MicroXRCEAgent | 921600 |
+
+**Cameras:**
+
+| Device | Camera | udev Rule |
+|--------|--------|-----------|
+| `/dev/video0` | Waveshare AF (front) — VendorID `0ede:8093` | symlinked by `99-usb-cameras.rules` |
+| `/dev/video2` | See3CAM_CU135 (bottom) — VendorID `2560:c1d1` | symlinked by `99-usb-cameras.rules` |
+| `/dev/video3` | Optical flow camera | — |
+
+Camera device names are **stable** via udev — always `/dev/video0` and `/dev/video2` regardless of plug order.
+
+**Companion Services:**
+
+| Service | Function |
+|---------|---------|
+| `wifibroadcast@drone` | WFB-NG drone profile — 3 streams: video TX, MAVLink TX/RX, tunnel TX/RX |
+| `mavlink.router` | Routes MAVLink: FC UART → WFB-NG UDP (127.0.0.1:14550) |
+| `microxrce-agent` | uXRCE-DDS bridge: FC UART ↔ ROS2 DDS domain (RMW) |
+| `vision_streaming` | ROS2 node: reads `/etc/vision_streaming.conf`, runs FFmpeg → RTP → `127.0.0.1:5602` |
+| `rc_control_node` | ROS2 node: RC CH9 PWM → camera switch commands to vision_config_manager |
+| `tfmini` | ROS2 node: TFmini Plus lidar → `/fmu/in/distance_sensor` |
+| `ros2_px4_translation_node` | ROS2 ↔ PX4 uORB message translation |
+| `ros2_external_node_reg` | Rover external nodes (`rov_ext`, `rov_collision_stop`) |
+| `block-traffic` | iptables: blocks DDS multicast (239.255.0.1, ports 7400–7500) on `drone-wfb` interface — prevents ROS2 topics flooding WFB tunnel |
+| `system_files_sync.timer` | Daily: rsync tracked config files → git commit + annotated tag in `codex-work` repo |
+| `ollama` | Local LLM server (Claude-on-device, for onboard AI use) |
+
+---
+
+### 2.2 Relay Station — Vind-Rly
+
+| Item | Detail |
+|------|--------|
+| Board | Raspberry Pi 5 |
+| OS | Ubuntu 24.04 LTS |
+| WFB NIC | rtl8812eu (`wlx00c0cab6db3b`) — fixed in `/etc/default/wifibroadcast` |
+| System version | `sid.conf` v1.0 (2026-03-15) |
+| SSH | `vind-admin@10.5.6.101:22` (P2P) or `vind-admin@10.5.5.77` (WFB tunnel) |
+
+**Network Interfaces:**
+
+| Interface | IP | Role |
+|-----------|----|------|
+| `eth0` | — | Ethernet to CPE610 OpenWrt node (cluster mode) |
+| `wlan0` | — | Onboard WiFi — P2P group owner |
+| `p2p-wlan0-0` | `10.5.6.101/24` | P2P group — GCS connects here |
+| `wlx00c0cab6db3b` | — | WFB-NG RF adapter — air link to drone |
+| `gs-wfb` | `10.5.5.77/24` | WFB-NG tunnel interface (drone end: `10.5.5.87/24`) |
+
+**GCS (G-Control Windows PC):** static IP `10.5.6.50` on the P2P LAN.
+
+**Relay Services:**
+
+| Service | Function |
+|---------|---------|
+| `wifibroadcast@gs` | WFB-NG ground station — standalone mode (active default) |
+| `wifibroadcast-cluster@gs` | WFB-NG cluster mode — uses CPE610 at `10.5.7.102` as second node |
+| `mavlink.router` | Routes MAVLink: WFB-NG UDP (0.0.0.0:14560) → QGC (10.5.6.50:14550) + tracker (127.0.0.1:14551) |
+| `ssh-tunnel-to-companion` | `autossh -L 0.0.0.0:2222:10.5.5.87:22 roz@10.5.5.87` — exposes drone SSH on relay port 2222 |
+| `relay_files_sync.timer` | Boot + daily: rsync tracked config files → git commit in `codex-relay` repo |
+| `mediamtx` | DISABLED (2026-03-15) — was RTSP video relay, replaced by direct WFB-NG GS endpoint |
+| `isc-dhcp-server` | DISABLED (2026-03-15) — GCS uses static IP, DHCP not needed |
+
+---
+
+### 2.3 Full Network + Data Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  G-Control.exe  (Windows PC — 10.5.6.50)                               │
+│                                                                          │
+│  GStreamer ◄── UDP :5600 (H264 video)                                   │
+│  MAVLink   ◄── UDP :14550 (telemetry)                                   │
+│  SSH ──────────────────────────────────► :22 relay, :2222 companion     │
+└────────────────────────┬────────────────────────────────────────────────┘
+                         │  Wi-Fi P2P  (10.5.6.0/24)
+┌────────────────────────▼────────────────────────────────────────────────┐
+│  Vind-Rly (Relay Station — 10.5.6.101 P2P / 10.5.5.77 WFB tunnel)     │
+│                                                                          │
+│  wifibroadcast@gs                                                        │
+│    ├─ video stream  ◄── WFB-NG rx (wlx00c0cab6db3b, ch157) ──► :5600   │
+│    ├─ mavlink       ◄──► WFB-NG    ──► local mavlink-router :14560      │
+│    └─ tunnel        ◄──► WFB-NG    ──► gs-wfb (10.5.5.77)             │
+│                                                                          │
+│  mavlink-router                                                          │
+│    ├─ input:  0.0.0.0:14560  (from WFB-NG GS mavlink peer)              │
+│    ├─ output: 10.5.6.50:14550 (→ G-Control QGC)                        │
+│    └─ output: 127.0.0.1:14551 (→ antenna tracker, future)              │
+│                                                                          │
+│  ssh-tunnel:  0.0.0.0:2222  ──────────────────► 10.5.5.87:22           │
+└────────────────────────┬────────────────────────────────────────────────┘
+                         │  WFB-NG RF link  (5 GHz ch157, MCS1, 20 MHz)
+                         │  rtl8812eu ◄──────────────────► rtl88x2eu
+┌────────────────────────▼────────────────────────────────────────────────┐
+│  Vind-Roz (Companion — 10.5.5.87 WFB / 10.5.5.87:22 SSH)              │
+│                                                                          │
+│  wifibroadcast@drone                                                     │
+│    ├─ video  TX ──► WFB-NG  (from vision_streaming → :5602)             │
+│    ├─ mavlink RX ◄──► WFB-NG  (to/from mavlink-router :14550)           │
+│    └─ tunnel  RX ◄──► WFB-NG  (drone-wfb 10.5.5.87 ◄──► gs-wfb 10.5.5.77)
+│                                                                          │
+│  vision_streaming (ROS2)                                                 │
+│    ├─ reads /etc/vision_streaming.conf                                   │
+│    └─ FFmpeg /dev/video0 → H264 RTP → 127.0.0.1:5602                   │
+│                                                                          │
+│  mavlink-router                                                          │
+│    ├─ /dev/ttyAMA0:921600  (FC MAVLink)                                  │
+│    └─ 127.0.0.1:14550      (→ WFB-NG drone mavlink)                     │
+│                                                                          │
+│  microxrce-agent: /dev/ttyAMA4:921600 ◄──► ROS2 DDS                    │
+│  block-traffic:   DROP DDS multicast on drone-wfb (prevents ROS2        │
+│                   topics from flooding WFB tunnel bandwidth)             │
+│                                                                          │
+│  Cameras: /dev/video0 (front Waveshare AF)                               │
+│            /dev/video2 (bottom See3CAM_CU135)                            │
+│            /dev/video3 (optical flow)                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 2.4 WFB-NG Link Configuration
+
+Both drone and relay use `/etc/wifibroadcast.cfg`. Key parameters:
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `wifi_channel` | 157 | 5 GHz |
+| `wifi_region` | `BO` | Allows higher TX power |
+| `wifi_txpower` | 3000 (= 30 dBm × 100) | rtl8812eu |
+| `mcs_index` | 1 | BPSK 1/2 — robust, ~7 Mbps |
+| `bandwidth` | 20 MHz | All streams |
+| `stbc` | 1 | Space-time block coding enabled |
+| `ldpc` | 1 | Low-density parity-check enabled |
+| `temp_overheat_warning` | 60°C | Air-TX chip threshold shown in G-Control toolbar |
+
+**3 WFB-NG streams (drone ↔ relay):**
+
+| Stream | TX side | RX side | FEC | Purpose |
+|--------|---------|---------|-----|---------|
+| `video` | drone (stream 0x00) | relay | k=8, n=12 | H264 video downlink |
+| `mavlink` | both (0x10/0x90) | both | k=1, n=2(drone)/n=3(relay) | MAVLink uplink + downlink |
+| `tunnel` | both (0xa0/0x20) | both | k=2, n=4 | SSH tunnel (drone-wfb ↔ gs-wfb) |
+
+**Keys:** `/etc/drone.key` (on both) + `/etc/gs.key` (on both) — symmetric keypair.
+Drone uses `drone.key` as keypair; GS uses `gs.key` as keypair.
+
+**WFB NIC auto-detection (companion):**
+`/etc/default/wifibroadcast` sets `WFB_NICS="$(wfb-nics)"` — automatically picks up
+the 8812au/8812eu card regardless of interface name.
+
+**Relay NIC is hardcoded:**
+`/etc/default/wifibroadcast` on relay: `WFB_NICS="wlx00c0cab6db3b"` (rtl8812eu, fixed).
+
+---
+
+### 2.5 SSH Path to Companion
+
+G-Control always connects to the companion via the relay's SSH tunnel:
+
+```
+G-Control (10.5.6.50)
+  └─► SSH :2222 on relay (10.5.6.101)
+       └─► autossh forwards to companion (10.5.5.87:22)
+            └─► roz@companion
+```
+
+The tunnel uses a key (`/home/vind-admin/.ssh/id_rsa`) — passwordless from relay to companion.
+G-Control supplies `roz`'s password, which is used for the SSH login and for `sudo` on the companion.
+
+**Fallback (direct WFB, on-site only):**
+If relay tunnel is unreachable, `pxlabs_cli` falls back to `10.5.5.87:22` (direct WFB tunnel IP).
+This only works when the operator is on-site with the drone on the same WFB link.
+
+---
+
+## 3. G-Control Architecture
+
+### 3.1 Layers
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -39,231 +236,319 @@ were touched (`QGCApplication.cc` to register the singleton, `FlyViewToolBar.qml
 │                                                                  │
 │  ┌──────────────────────┐   ┌────────────────────────────────┐  │
 │  │  QGC Native Layer    │   │  PXLABS Layer (additive)       │  │
-│  │  (MAVLink/PX4/video) │   │                                │  │
-│  │                      │   │  QML UI          C++ Bridge    │  │
-│  │  FlyView             │   │  ─────────       ───────────   │  │
-│  │  Toolbar             │   │  FlyViewCustomLayer.qml        │  │
-│  │  Settings            │   │  FlyViewToolBar.qml (chips)    │  │
-│  │  Parameters          │   │  CompanionControl.qml          │  │
-│  │  Mission             │   │  RelayControl.qml          ┌───┤  │
-│  │                      │   │  ConnectionControl.qml     │   │  │
-│  │                      │   │  PXLABSSettings.qml        │   │  │
-│  └──────────────────────┘   └────────────────────────────┼───┘  │
-│                                                           │      │
-│                              PXLABSCommandRunner.cc ◄────┘      │
-│                              (QProcess → pxlabs_cli.exe)         │
-└──────────────────────────────────────┬──────────────────────────┘
-                                       │ subprocess
-                              ┌────────▼────────┐
-                              │ pxlabs_cli.exe  │
-                              │ (PyInstaller)   │
-                              │  paramiko SSH   │
-                              └────┬───────┬────┘
-                                   │       │
-                     SSH :2222     │       │  SSH :22
-                    ┌──────────────▼─┐   ┌─▼──────────────┐
-                    │  Vind-Roz      │   │  Vind-Rly       │
-                    │  (Companion)   │   │  (Relay)        │
-                    │  RPi5 Ubuntu   │   │  RPi5 Ubuntu    │
-                    │  PX4 + ROS2    │   │  WFB-NG gateway │
-                    └────────────────┘   └─────────────────┘
+│  │  (unchanged)         │   │                                │  │
+│  │  MAVLink telemetry   │   │  Settings pages:               │  │
+│  │  HUD / instruments   │   │    ConnectionControl.qml       │  │
+│  │  Mission planning    │   │    PXLABSSettings.qml          │  │
+│  │  Vehicle params      │   │    CompanionControl.qml        │  │
+│  │  GStreamer video      │   │    RelayControl.qml            │  │
+│  │  Native capture      │   │                                │  │
+│  │                      │   │  FlyView additions:            │  │
+│  │                      │   │    FlyViewCustomLayer.qml      │  │
+│  │                      │   │    FlyViewToolBar.qml (chips)  │  │
+│  └──────────────────────┘   └──────────────┬─────────────────┘  │
+│                                             │                    │
+│                              PXLABSCommandRunner.cc              │
+│                              (C++ QProcess singleton)            │
+└─────────────────────────────────┬───────────────────────────────┘
+                                  │ subprocess per command
+                         ┌────────▼──────────┐
+                         │  pxlabs_cli.exe   │
+                         │  (PyInstaller)    │
+                         │  paramiko SSH     │
+                         └──────┬──────┬─────┘
+                                │      │
+                  SSH :2222     │      │ SSH :22
+             ┌──────────────────▼─┐ ┌──▼──────────────┐
+             │  Vind-Roz           │ │  Vind-Rly       │
+             │  (Companion RPi5)   │ │  (Relay RPi5)   │
+             └────────────────────┘ └─────────────────┘
 ```
 
-### 2.2 The Three Layers in Detail
+**Layer 1 — QGC Native (untouched):**
+Standard QGC. Video arrives as RTP H264 from companion → WFB-NG → relay → GCS UDP :5600,
+decoded by GStreamer (d3d11h264dec, no gstlibav needed). MAVLink arrives via relay's
+mavlink-router → GCS UDP :14550.
 
-**Layer 1 — QGC Native (unchanged)**
-Standard QGroundControl: MAVLink link to PX4 via relay's mavlink.router, telemetry, HUD,
-video feed (GStreamer H264 from companion's vision_streaming service), mission planning, parameters.
+**Layer 2 — PXLABS QML + C++ (all additive):**
+All companion/relay management UI. Runs inside the same Qt process. Communicates downward
+through `PXLABSRunner` singleton to spawn CLI subprocesses.
 
-**Layer 2 — PXLABS QML + C++ (G-Control additions)**
-All UI for companion/relay management. Runs inside the same Qt process as QGC.
-Communicates downward through `PXLABSRunner` (the C++ singleton) to spawn CLI subprocess.
-
-**Layer 3 — pxlabs_cli (subprocess)**
-Python-based SSH bridge compiled into a standalone exe. Completely decoupled from the Qt process.
-Opens a fresh paramiko SSH connection per command, executes remote commands, streams stdout/stderr
-back through QProcess pipes, exits. Stateless — no persistent connection held.
+**Layer 3 — pxlabs_cli (stateless subprocess):**
+Python SSH bridge compiled to a standalone exe. One process per command. Opens a fresh
+paramiko connection, executes one remote command, streams stdout/stderr through QProcess
+pipes, exits. No persistent connection held between commands.
 
 ---
 
-## 3. Component Deep-Dive
-
-### 3.1 PXLABSCommandRunner (C++ Singleton)
+### 3.2 PXLABSCommandRunner — C++ Singleton
 
 **Files:** `src/Utilities/PXLABSCommandRunner.h/.cc`
-**QML URI:** `QGroundControl.PXLABS` → object name `PXLABSRunner`
-**Registration:** `src/QGCApplication.cc` — `qmlRegisterSingletonType<PXLABSCommandRunner>(...)`
+**Registered:** `src/QGCApplication.cc` → `qmlRegisterSingletonType<PXLABSCommandRunner>(...)`
+**QML access:** `import QGroundControl.PXLABS` → `PXLABSRunner`
 
-This is the only C++ code added by PXLABS. It is a thin QProcess wrapper with three jobs:
+The only C++ code added. A thin QProcess wrapper with three responsibilities:
 
-1. **Locate and launch the CLI** — reads `cliPath` and `pythonPath` from `QSettings`.
-   - If `cliPath` ends with `.exe`: runs it directly — installed mode, no Python needed.
-   - If `cliPath` ends with `.py`: prepends `pythonPath` — developer mode with source script.
-   - Default `cliPath` = `<appDir>/tools/pxlabs_cli.exe`.
+**1. Launch the CLI:**
+- Reads `cliPath` and `pythonPath` from `QSettings`.
+- If `cliPath` ends with `.exe` → runs directly (installed mode, no Python needed).
+- If `cliPath` ends with `.py` → prepends `pythonPath` (developer mode, source script).
+- Default: `<appDir>/tools/pxlabs_cli.exe`.
 
-2. **Stream output to QML** — `readyReadStandardOutput` + `readyReadStandardError` both accumulate
-   into `_lastOutput` and emit `outputReady(text)`. Stderr is included in the same stream
-   (intentional — CLI mixes status messages into stderr for QProcess visibility).
+**2. Stream output:**
+- Both `readyReadStandardOutput` and `readyReadStandardError` accumulate into `_lastOutput`
+  and emit `outputReady(text)`. Stderr is included in the same stream intentionally —
+  the CLI mixes status messages into stderr for QProcess visibility.
 
-3. **Signal completion** — `_onFinished` drains any remaining buffered bytes first (critical: QProcess
-   buffers can flush after `finished` fires), then emits `commandFinished(exitCode)`.
-   `_onError` (FailedToStart etc.) emits `commandFailed(errorText)`.
+**3. Signal completion:**
+- `_onFinished` drains any remaining buffered bytes before emitting `commandFinished(exitCode)`.
+  Critical: QProcess buffers can flush *after* the `finished` signal fires. Draining first
+  prevents QML from missing the last chunk of output.
 
-**Key design constraint:** Only one command runs at a time (`_running` guard). QML must check
-`PXLABSRunner.running` before calling `run()` — attempting to run while busy returns a
-`commandFailed` signal immediately.
-
-**Signal broadcast:** `outputReady` and `commandFinished` are broadcast to **all** QML pages that
-have a `Connections { target: PXLABSRunner }` block. Each page must use a boolean flag to determine
-whether the signal belongs to it (see §3.3).
+**Constraint:** Only one command at a time (`_running` guard).
+**Broadcast:** `outputReady` and `commandFinished` go to ALL pages with a `Connections { target: PXLABSRunner }` block — each page must use a boolean flag to claim its own responses (see §3.4).
 
 **QML API:**
 ```qml
 import QGroundControl.PXLABS
 
-// Run a command — args only, runner prepends cli path
-PXLABSRunner.run("companion front-switch")
-PXLABSRunner.run("relay wfb refresh")
-PXLABSRunner.run("services refresh --target companion")
-
-// Abort (kills subprocess)
-PXLABSRunner.abort()
-
-// Properties
-PXLABSRunner.running        // bool — true while subprocess is alive
-PXLABSRunner.lastOutput     // QString — cumulative stdout+stderr so far
-
-// Signals
-onOutputReady(text)         // fires on each chunk of output
-onCommandFinished(exitCode) // fired after drain — 0 = success
-onCommandFailed(errorText)  // process failed to start, crashed, etc.
+PXLABSRunner.run("companion front-switch")   // args only — runner prepends cli path
+PXLABSRunner.abort()                         // kills subprocess
+PXLABSRunner.running                         // bool
+PXLABSRunner.lastOutput                      // cumulative stdout+stderr
+// Signals:
+onOutputReady(text)          // fires per output chunk
+onCommandFinished(exitCode)  // 0 = success, after drain
+onCommandFailed(errorText)   // process didn't start / crashed
 ```
 
 ---
 
-### 3.2 pxlabs_cli (SSH Bridge)
+### 3.3 pxlabs_cli — SSH Bridge
 
-**File:** `tools/pxlabs_cli.py` → compiled to `build_clean\Release\tools\pxlabs_cli.exe`
+**Source:** `tools/pxlabs_cli.py` → **Compiled to:** `build_clean\Release\tools\pxlabs_cli.exe`
 
-A stateless CLI program. G-Control spawns it as a subprocess per command. It connects to the
-companion or relay over SSH, executes one remote command, prints output, and exits.
+Stateless — one subprocess per command. Every call opens a fresh paramiko SSH session.
 
-#### Config resolution
+#### Config path resolution
 
 ```python
-# Installed (frozen exe): use sys.executable to find real install dir
+# PyInstaller frozen: __file__ → temp _MEI* dir (wrong). Use sys.executable instead.
 if getattr(sys, "frozen", False):
-    ROOT = Path(sys.executable).resolve().parents[1]
+    ROOT = Path(sys.executable).resolve().parents[1]   # real install dir
 else:
-    ROOT = Path(__file__).resolve().parents[1]
-
+    ROOT = Path(__file__).resolve().parents[1]          # dev: repo root
 CONFIG_PATH = ROOT / "config" / "ssh_config.json"
 ```
 
-Config file: `<install>\config\ssh_config.json` (JSON, not encrypted).
-Passwords are NOT in the JSON — they live in the Windows keyring under service name `"Drone-Control"`,
-account = SSH username. This means passwords survive reinstall and are not exposed in plain text.
+Config JSON stores: companion IP/port/user, relay IP/port/user.
+Passwords are **not** in the JSON — stored in Windows keyring (service: `"Drone-Control"`, account: username).
+This means passwords survive reinstall and never appear in plaintext files.
 
-#### Connection selection (companion)
+#### Companion connection selection
 
 ```python
 def pick_companion_host(cfg):
-    # Try primary (relay tunnel 10.5.6.101:2222) first
-    if is_reachable(primary_ip, primary_port):
+    # Primary: relay tunnel (10.5.6.101:2222 → relay → drone)
+    if is_reachable(primary_ip, primary_port):   # 5 s TCP socket test
         return primary_ip, primary_port
-    # Fall back to secondary (direct WFB IP 10.5.5.87:22)
+    # Fallback: direct WFB (10.5.5.87:22, on-site only)
     if secondary_ip and is_reachable(secondary_ip, secondary_port):
         return secondary_ip, secondary_port
-    # Return primary anyway — SSH will give a proper error
-    return primary_ip, primary_port
+    return primary_ip, primary_port   # return primary regardless, let SSH fail with real error
 ```
 
-Primary path goes through the relay's SSH tunnel (P2P network). Secondary is direct WFB if the
-operator is on-site. Reachability is a fast TCP socket test (5 s timeout), not a full SSH handshake.
-
-#### sudo password feeding
+#### sudo password feeding (security)
 
 ```python
 def _sudo_wrap(command, password):
-    # Feed password via printf, not echo — echo exposes the password in `ps aux` on the remote
+    # printf instead of echo — echo exposes password in `ps aux` on remote host
     if command.startswith("sudo "):
         pw = password.replace("'", "'\"'\"'")
         return f"printf '%s\\n' '{pw}' | sudo -S {command[5:]}"
     return command
 ```
 
-All remote commands that need root use `sudo -S` (read password from stdin). The password is piped
-from `printf` to avoid it appearing in the remote process list.
+All root commands use `sudo -S` (read from stdin). The companion's `sudoers` grants `roz`
+passwordless access to `systemctl`, `journalctl`, `tee`, `cp`, `apt` — but `vision_config_manager`
+and other scripts still require password-fed sudo.
 
-#### SSH session lifecycle
+#### Structured output formats (parsed by G-Control QML)
 
-One `paramiko.SSHClient` is opened per `ssh_exec()` call, used, and closed in `finally`.
-No persistent connection — simpler, and avoids keepalive complexity for the GCS use case
-(commands are infrequent, typically operator-triggered).
+| Format | Example | Parsed by |
+|--------|---------|-----------|
+| Reachability | `COMPANION:reachable` / `RELAY:unreachable` | FlyViewToolBar — connection status chips |
+| WFB mode | `SA:active` / `CA:inactive` | FlyViewCustomLayer — WFB mode detection |
 
-#### Output format contract
-
-CLI stdout is free text displayed directly in the QML `TextArea`.
-Two structured formats are used:
-- **Status check:** `COMPANION:reachable` / `COMPANION:unreachable` / `RELAY:reachable` / `RELAY:unreachable` — parsed by FlyViewToolBar connection chips.
-- **WFB mode:** `SA:active` / `SA:inactive` / `CA:active` / `CA:inactive` — parsed by FlyViewCustomLayer WFB mode logic.
-
-All other output (camera query, service list, etc.) is displayed as raw text in the relevant QML page.
-
-#### Command surface
-
-| Subcommand | Target | What it does |
-|------------|--------|-------------|
-| `companion front-switch` | Companion | `sudo vision_config_manager /dev/video0` |
-| `companion bottom-switch` | Companion | `sudo vision_config_manager /dev/video2` |
-| `companion split-front-bottom` | Companion | `sudo vision_config_manager /dev/video0 /dev/video2` |
-| `companion split-bottom-front` | Companion | `sudo vision_config_manager /dev/video2 /dev/video0` |
-| `companion camera-query --device` | Companion | `sudo vision_config_manager list-details <dev>` |
-| `companion camera-params --device --resolution --fps --format` | Companion | `sudo vision_config_manager set-cam-params <dev> <res> <fps> --format <fmt>` |
-| `companion wifi-temp` | Companion | Read WFB NIC temp — `/etc/default/wifibroadcast` → wfb-cli → procfs → sysfs |
-| `companion reboot` | Companion | `sudo reboot` |
-| `companion shutdown` | Companion | `sudo shutdown -h now` |
-| `companion ssh-terminal` | Companion | Opens `cmd.exe /c start "" cmd /k ssh -p <port> <user>@<ip>` |
-| `relay wfb refresh` | Relay | `wfb-rlyctl status` — outputs SA/CA lines |
-| `relay wfb switch --mode` | Relay | `wfb-rlyctl switch <mode>` |
-| `relay wfb list-nics` | Relay | `wfb-rlyctl list-nics` |
-| `relay wfb set-nics --nics` | Relay | `wfb-rlyctl set-nics <nic>` |
-| `relay wfb logs` | Relay | `journalctl -u wifibroadcast@gs -n 60 --no-pager` |
-| `relay wfb view-config` | Relay | `cat /etc/wifibroadcast.cfg` |
-| `relay reboot` | Relay | `sudo reboot` |
-| `relay shutdown` | Relay | `sudo shutdown -h now` |
-| `relay ssh-terminal` | Relay | Opens CMD window with SSH session |
-| `services refresh --target` | Either | Lists systemd services + status |
-| `services start\|stop\|restart\|enable\|disable --target --service` | Either | `systemctl <action> <service>` |
-| `status` | Both | Fast TCP reachability check, no SSH, no password |
-| `config show` | Local | Print resolved JSON config + path |
-| `config set [--flags]` | Local | Update `ssh_config.json` + keyring passwords |
+All other output is raw text displayed in the relevant QML page `TextArea`.
 
 ---
 
-### 3.3 Signal Routing Pattern (Multi-Page Isolation)
+### 3.4 What CLI Commands Actually Do on the Remote System
 
-`PXLABSRunner` is a singleton — its signals fire on every `Connections` block across every loaded
-QML page simultaneously. Without isolation, page A's `_busy` flag would be cleared by page B's command.
+#### Camera switching → vision_config_manager
 
-**Pattern used throughout:**
+`vision_config_manager` is a Python script at `/usr/local/bin/vision_config_manager` on the companion.
+It manages `/etc/vision_streaming.conf` and controls `vision_streaming.service`.
+
+**Config file (`/etc/vision_streaming.conf`):**
+```ini
+[general]
+rtp_ip = 127.0.0.1
+rtp_port = 5602
+
+[primary]
+camera_name = /dev/video0
+resolution = 1280x720
+bitrate = 3000K
+fps = 60
+format = MJPG
+
+[secondary]          # only present during split/PiP
+camera_name = /dev/video2
+resolution = 1280x720
+fps = 30
+format = MJPG
+pip_position = bottom-right
+pip_size = 240x180
+bitrate = 2000K
+```
+
+**How `vision_config_manager` works:**
+- **Legacy switch** (positional args): `vision_config_manager /dev/video0` — probes live V4L2
+  format without stopping the service (`v4l2-ctl --get-fmt-video`, `--get-parm`), updates
+  `[primary]` section, removes `[secondary]` if single device, restarts service.
+  Atomic write: writes to `/tmp/vision_streaming.conf` then `sudo cp` to destination.
+- **`set-cam-params`**: sets resolution/fps/format in config → restarts service.
+- **`list-details`**: returns full camera info (V4L2 formats, current settings, udevadm metadata).
+
+**G-Control → CLI → remote mapping:**
+
+| G-Control action | CLI args | Remote command |
+|-----------------|---------|----------------|
+| Front camera | `companion front-switch` | `sudo vision_config_manager /dev/video0` |
+| Bottom camera | `companion bottom-switch` | `sudo vision_config_manager /dev/video2` |
+| Split front→bottom | `companion split-front-bottom` | `sudo vision_config_manager /dev/video0 /dev/video2` |
+| Split bottom→front | `companion split-bottom-front` | `sudo vision_config_manager /dev/video2 /dev/video0` |
+| Query camera | `companion camera-query --device /dev/video0` | `sudo vision_config_manager list-details /dev/video0` |
+| Set params | `companion camera-params --device /dev/video0 --resolution 1920x1080 --fps 60 --format MJPG` | `sudo vision_config_manager set-cam-params /dev/video0 1920x1080 60 --format MJPG` |
+
+Also note: **RC CH9** on the drone triggers camera switching directly via `rc_control_node` (ROS2):
+- PWM 1012 → front (`/dev/video0`)
+- PWM 1514 → bottom (`/dev/video2`)
+- PWM 2014 → split/PiP
+
+RC switching and G-Control switching both call `vision_config_manager` — they are equivalent paths.
+
+#### Air-TX temperature → companion NIC thermal read
+
+The Air-TX chip in the G-Control toolbar shows WFB RF card temperature. Detection chain (3-step):
+
+1. Read `/etc/default/wifibroadcast` to get actual WFB NIC name (e.g. `wlx00c0caa578a9`)
+2. Try `wfb-cli drone` — parse output for `XX°C` or `XX C` pattern (WFB-NG built-in temp reporting)
+3. Fall back to sysfs: `/sys/class/net/<nic>/device/hwmon*/temp1_input` or similar thermal scan
+
+WFB config sets `temp_overheat_warning = 60` — G-Control uses the same threshold for orange/red colour.
+
+#### WFB mode switching → wfb-rlyctl on relay
+
+`wfb-rlyctl` is a shell script at `/usr/local/sbin/wfb-rlyctl` on the relay.
+It controls two WFB-NG operating modes:
+
+**Standalone mode** (default):
+- Service: `wifibroadcast@gs.service`
+- NIC: `wlx00c0cab6db3b` (single rtl8812eu adapter)
+- Command: `sudo wfb-rlyctl use-standalone`
+
+**Cluster mode** (adds OpenWrt CPE610 as second WFB node):
+- Service: `wifibroadcast-cluster@gs.service`
+- Nodes: relay (`127.0.0.1`) + CPE610 (`10.5.7.102`, iface `phy0-mon0`)
+- SSH key: `/home/vind-admin/.ssh/wfb_cluster_ed25519`
+- Command: `sudo wfb-rlyctl use-cluster`
+
+**G-Control → CLI → relay mapping:**
+
+| G-Control action | CLI args | Remote command |
+|-----------------|---------|----------------|
+| Refresh WFB status | `relay wfb refresh` | `wfb-rlyctl status` → outputs `SA:active/inactive` + `CA:active/inactive` |
+| Switch to standalone | `relay wfb switch --mode standalone` | `sudo wfb-rlyctl use-standalone` |
+| Switch to cluster | `relay wfb switch --mode cluster` | `sudo wfb-rlyctl use-cluster` |
+| List NICs | `relay wfb list-nics` | `wfb-rlyctl list-nics` |
+| Set NICs | `relay wfb set-nics --nics <iface>` | `sudo wfb-rlyctl set-nics <iface>` — updates `/etc/default/wifibroadcast` + restarts |
+| WFB logs | `relay wfb logs` | `journalctl -u wifibroadcast@gs -n 60 --no-pager` |
+| View config | `relay wfb view-config` | `cat /etc/wifibroadcast.cfg` |
+
+**WFB mode output parsing in G-Control:**
 
 ```qml
-// Page-local flag — set true before run(), cleared in onCommandFinished/onCommandFailed
+// FlyViewCustomLayer.qml — onOutputReady
+var saMatch = text.match(/^SA:(\S+)/m)   // SA = Standalone Active
+var caMatch = text.match(/^CA:(\S+)/m)   // CA = Cluster Active
+if (sa === "active" && ca !== "active")      newMode = "standalone"
+else if (ca === "active" && sa !== "active") newMode = "cluster"
+else if (sa === "active" && ca === "active") newMode = "standalone"  // both — default standalone
+```
+
+Mode is **never persisted** — always fetched live on panel open. `_wfbInitFetched` prevents
+re-fetching on every subsequent panel open (one fetch per app session; manual refresh available).
+
+#### Services control → systemctl
+
+Both companion and relay expose service management. `services refresh --target companion` runs:
+`systemctl list-units --type=service --all --no-pager` on the target and parses the output into
+the live service list shown in CompanionControl / RelayControl.
+
+Per-service actions: `sudo systemctl start|stop|restart|enable|disable <service-name>`.
+
+**Known managed services (companion):**
+`mavlink.router`, `microxrce-agent`, `rc_control_node`, `vision_streaming`, `tfmini`,
+`ros2_px4_translation_node`, `ros2_external_node_reg`, `block-traffic`, `wifibroadcast@drone`, `ollama`
+
+**Known managed services (relay):**
+`wifibroadcast@gs`, `wifibroadcast-cluster@gs`, `mavlink.router`, `ssh-tunnel-to-companion`, `relay_files_sync.timer`
+
+#### SSH terminal
+
+Opens a new Windows CMD window with an SSH session to companion or relay:
+```python
+subprocess.Popen(["cmd.exe", "/c", "start", "", "cmd", "/k",
+                  f"ssh -p {port} {user}@{ip}"])
+```
+The empty `""` is the window title (required syntax for `start`). Without it, `cmd` treats
+the first quoted string as the window title and `ssh` is not found as a program.
+
+#### Status check (connection chips)
+
+`status` action: fast TCP socket test (5 s timeout), no SSH, no password:
+```python
+def is_reachable(ip, port, timeout=5):
+    socket.create_connection((ip, int(port)), timeout=timeout).close()
+    return True
+```
+Output: `COMPANION:reachable` / `COMPANION:unreachable` / `RELAY:reachable` / `RELAY:unreachable`
+Parsed by FlyViewToolBar to colour the connection dots (green/red/grey).
+Runs 3 s after app start, then every 30 s.
+
+---
+
+### 3.5 Signal Routing Pattern
+
+`PXLABSRunner` is a singleton — signals fire on every `Connections` block simultaneously.
+Each QML page uses a private boolean flag to claim its own responses:
+
+```qml
 property bool _myFetch: false
 
 Connections {
     target: PXLABSRunner
-
     function onOutputReady(text) {
-        if (!_myFetch) return      // not our command — ignore
+        if (!_myFetch) return    // not our command
         // process text...
     }
     function onCommandFinished(exitCode) {
         if (!_myFetch) return
         _myFetch = false
         _busy = false
-        // update UI...
     }
     function onCommandFailed(errorText) {
         if (!_myFetch) return
@@ -281,7 +566,7 @@ function _runMyCommand() {
 }
 ```
 
-**Flags in use across the codebase:**
+**Flags across the codebase:**
 
 | File | Flag | Guards |
 |------|------|--------|
@@ -294,235 +579,135 @@ function _runMyCommand() {
 
 ---
 
-### 3.4 FlyViewCustomLayer — System Control Panel
+### 3.6 FlyViewCustomLayer — System Control Panel
 
 **File:** `src/FlightDisplay/FlyViewCustomLayer.qml`
 
-This is the main in-flight UI addition. It renders **below** the QGC toolbar (FlyViewCustomLayer
-z-order is below toolbar by QGC design) so all added toolbar elements live in `FlyViewToolBar.qml`.
+Renders **below** the QGC toolbar (QGC's FlyViewCustomLayer z-order by design).
+All toolbar additions go in `FlyViewToolBar.qml`, not here.
 
-#### System Control Panel (right-edge)
+#### System Control Panel (right-edge slide-out)
 
-A `Rectangle` (`id: rightPanel`) docked to the right edge of the FlyView. Slides open/closed
-with a `NumberAnimation` on its `x` property (slides off-screen right when closed).
+`rightPanel` Rectangle docked to the right edge. Slides via `NumberAnimation` on `x`.
 
-**Pull tab** — a narrow strip on the left edge of `rightPanel`. Always visible. Shows WFB mode
-glyph (◉ standalone / ⬡ cluster / ⊙ unknown) when panel is closed so the operator can see WFB
-status at a glance without opening the panel.
+**Pull tab** — left edge of panel, always visible. Shows WFB mode glyph when panel closed:
+- `◉` green = standalone active
+- `⬡` blue = cluster active
+- `⊙` grey = unknown / not fetched
 
-**Resize handles** — 4 `MouseArea` items around the panel edges:
+**Resize handles** — 4 MouseAreas:
 
-| Handle | Axis | Anchors | z | Notes |
-|--------|------|---------|---|-------|
-| `leftResizeHandle` | Horizontal | left edge, between header and bottom | 6 | `preventStealing: true` |
-| `bottomResizeHandle` | Vertical | bottom edge | 6 | `preventStealing: true` |
-| `topResizeHandle` | Vertical | top edge (excludes tab width) | 6 | moves panel Y + resizes height |
-| `cornerResizeHandle` | Both | bottom-right corner | 6 | standard both-axis drag |
+| Handle | Axis | z | preventStealing | Notes |
+|--------|------|---|-----------------|-------|
+| `leftResizeHandle` | Horizontal | 6 | true | Excludes header top |
+| `bottomResizeHandle` | Vertical | 6 | true | Bottom edge |
+| `topResizeHandle` | Vertical | 6 | false | Moves Y + resizes height; excludes tab width |
+| `cornerResizeHandle` | Both | 6 | false | Bottom-right corner |
 
-All at z:6 to beat the `rpContent` Flickable which propagates mouse grab to z:5 level.
-`preventStealing: true` on left and bottom handles prevents the vertical Flickable from stealing
-the drag on the vertical axis.
+All at z:6 — above the `rpContent` Flickable which propagates mouse grab to z:5 level.
+`preventStealing: true` on left + bottom handles prevents VerticalFlick Flickable from stealing
+the drag event on the vertical axis.
 
 **Top-edge resize math** (bottom of panel stays fixed):
 ```
-newH = pressH - dy      // shrink/grow by delta
-newY = pressY + dy      // move top edge, bottom = pressY + pressH (constant)
+newH = pressH - dy          // height shrinks/grows by delta
+newY = pressY + dy          // top edge moves, bottom = pressY + pressH (constant)
 ```
 
-**Panel geometry persistence** — saved to `QGroundControl.saveGlobalSetting`:
-- `pxlabs_rp_y` — vertical position
-- `pxlabs_rp_w` — width (stored as `_rpContentW`)
-- `pxlabs_rp_h` — height
+**Geometry persistence:**
 
-Restored in `Component.onCompleted` → `_restoreRpLayout()`.
-
-**Content** — a `Flickable` (`id: rpContent`) containing:
-- WFB Mode section: Standalone / Cluster buttons + ↻ Refresh + active mode badge
-- Companion section: Restart / Shutdown (with confirm dialog) + SSH Terminal
-- Relay section: Restart / Shutdown (with confirm dialog) + SSH Terminal
+| Setting key | What it stores |
+|-------------|----------------|
+| `pxlabs_rp_y` | Panel vertical position |
+| `pxlabs_rp_w` | Panel width (`_rpContentW`) |
+| `pxlabs_rp_h` | Panel height |
+| `pxlabs_cam_x` | Camera panel X |
+| `pxlabs_cam_y` | Camera panel Y |
 
 **WFB mode lifecycle:**
 ```
-Panel opens first time
-  └─ panelOpenWatcher fires → Qt.callLater(_checkWfbMode)
-       └─ PXLABSRunner.run("relay wfb refresh")
-            └─ onOutputReady: parse SA:/CA: lines → set _wfbMode
-                 └─ pull tab glyph + button highlight update reactively
+First panel open
+  → panelOpenWatcher fires → Qt.callLater(_checkWfbMode)
+      → PXLABSRunner.run("relay wfb refresh")
+          → onOutputReady: parse SA/CA → _wfbMode updated
+              → pull tab glyph + button highlight update reactively
 
-Operator clicks Standalone/Cluster button
-  └─ PXLABSRunner.run("relay wfb switch --mode standalone|cluster")
-       └─ onCommandFinished: start wfbCheckTimer (4 s)
-            └─ wfbCheckTimer.triggered: _checkWfbMode() again to confirm
+Operator clicks Standalone / Cluster
+  → PXLABSRunner.run("relay wfb switch --mode standalone|cluster")
+      → onCommandFinished → start wfbCheckTimer (4 s)
+          → wfbCheckTimer.triggered → _checkWfbMode() to confirm switch
 ```
-
-Mode is **never persisted** to `saveGlobalSetting` — always fetched live to prevent stale display
-after reconnect. `_wfbInitFetched` ensures the fetch only happens once per app session
-(subsequent panel opens do not re-fetch unless manually refreshed).
-
-#### Camera Switch Panel
-
-A separate draggable `Rectangle` (`id: cameraPanel`). Drag handle = header bar only (prevents
-accidental drag on button clicks). Position clamped to screen bounds.
-
-Buttons: Front / Bottom / Split Front→Bottom / Split Bottom→Front. Each calls:
-```qml
-PXLABSRunner.run("companion front-switch")   // etc.
-```
-
-Position saved to `pxlabs_cam_x` / `pxlabs_cam_y` on drag end.
 
 ---
 
-### 3.5 FlyViewToolBar Additions
+### 3.7 FlyViewToolBar Additions
 
-**File:** `src/QmlControls/FlyViewToolBar.qml` (modified — additive only)
-
-Three chips added to the right side of the toolbar, left of the PX4 brand logo:
+Three chips added left of PX4 brand logo:
 
 ```
 [ Comp ● ]  [ Relay ● ]  [ Air-TX  23.4°C ↻ ]  [ PXLABS ]  [ PX4 logo ]
 ```
 
-#### Connection Status Chips (Comp● / Relay●)
+**Connection chips:** TCP reachability, auto every 30 s, manual refresh available.
+`COMPANION:reachable/unreachable` + `RELAY:reachable/unreachable` from `status` action.
 
-- Dot colour: green = reachable, red = unreachable, grey = unknown/checking
-- Auto-check: 3 s after `Component.onCompleted`, then every 30 s via `Timer`
-- Manual refresh: click ↻ on the Air-TX chip (same action)
-- Command: `PXLABSRunner.run("status")` — fast TCP socket check, no SSH, no password required
-- Output parsed: `COMPANION:reachable` / `RELAY:reachable` etc.
-- Flag: `_statusFetch` — set true before run, cleared in `onCommandFinished`
+**Air-TX chip:** WFB RF card temperature from `companion wifi-temp`.
+Green < 60°C / orange 60–74°C / red ≥ 75°C (matches `temp_overheat_warning = 60` in wifibroadcast.cfg).
+Auto-poll timer controlled by settings. `onOutputReady` scans lines for a parseable float —
+robust to stderr mixing into `_lastOutput`.
 
-#### Air-TX Temperature Chip
-
-- Shows WFB RF card (rtl88x2eu) temperature from companion
-- Colour: green < 60°C, orange 60–74°C, red ≥ 75°C, blue = N/A or error
-- Auto-poll: controlled by `pxlabs_wifi_temp_enabled` (bool setting) and
-  `pxlabs_wifi_temp_interval` (seconds, minimum 10)
-- Manual refresh: click chip
-- Command: `PXLABSRunner.run("companion wifi-temp")`
-- Output: `onOutputReady` scans lines for a parseable float — robust to mixed stderr
-
-**Temperature detection on companion (3-step fallback):**
-1. Read `/etc/default/wifibroadcast` to get actual WFB NIC name (e.g. `wlx00c0cab6db3b`)
-2. Try `wfb-cli drone` output — parse `XX°C` or `XX C` pattern
-3. Fall back to procfs (`/sys/class/net/<nic>/...`) or sysfs thermal scan
-
-#### PXLABS Brand Chip
-
-- Static label "PXLABS", uses `qgcPal` colors
-- Anchored left of PX4 logo; Air-TX anchors to `pxLabsChip.left`
+**PXLABS chip:** Static label, `qgcPal` colours, anchors Air-TX to its left.
 
 ---
 
-### 3.6 Settings Pages
-
-All loaded via `PXLABSPagesModel.qml` which is included as a separate `ListModel` section in the
-app settings sidebar — no modification to QGC's `SettingsPagesModel.qml` list (entries are injected).
-
-#### ConnectionControl.qml
-- SSH credentials: companion IP, port, username, password (written to keyring + config JSON)
-- Relay SSH credentials: relay IP, port, username, password
-- Periodic connection check: enable/disable + interval
-- Air-TX temperature polling: enable/disable + interval
-- Apply buttons write config file and keyring immediately
-
-#### PXLABSSettings.qml
-- Python executable path (dev mode — path to `python.exe`)
-- CLI path (path to `pxlabs_cli.py` or `pxlabs_cli.exe`)
-- "Test CLI" button — runs `config show`, displays raw output
-- Both paths written to `QSettings` via `PXLABSRunner.setCliPath()` / `setPythonPath()`
-
-#### CompanionControl.qml
-- **Camera Switch** — Front / Bottom / Split F→B / Split B→F
-- **Camera Device (Advanced)**:
-  - Device selector (combo: `/dev/video0`, `/dev/video2`, `/dev/video3`)
-  - Query button → `companion camera-query --device` → shows full `vision_config_manager list-details` output
-  - Resolution, FPS, Format inputs + Apply → `companion camera-params --device --resolution --fps --format`
-- **System** — Reboot / Shutdown (with confirmation dialogs)
-- **Services** — live list from `services refresh --target companion`; per-service Start/Stop/Restart/Enable/Disable
-
-#### RelayControl.qml
-- **WFB Mode** — Standalone / Cluster buttons + refresh
-- **NIC Config** — list NICs, set active NIC
-- **System** — Reboot / Shutdown
-- **Services** — same pattern as CompanionControl
-
----
-
-### 3.7 Windows Installer
+### 3.8 Windows Installer
 
 **Files:** `installer/G-Control-Setup.nsi`, `installer/EnvVarUpdate.nsh`
-**Output:** `installer/G-Control-Setup-v<version>.exe`
+**Output:** `installer/G-Control-Setup-v<version>.exe` (~117 MB LZMA)
 
-#### Build pipeline
+**What it installs:**
+- `C:\Program Files\G-Control\G-Control.exe` + all Qt DLLs + GStreamer plugins
+- `C:\Program Files\G-Control\tools\pxlabs_cli.exe` (no Python needed)
+- `C:\Program Files\G-Control\config\ssh_config.json` (with `SetOverwrite off`)
+- All QML dirs, platform plugins, translations
 
-```
-G-Control.exe  (CMake/MSVC build)
-     +
-pxlabs_cli.exe (PyInstaller onefile from tools/pxlabs_cli.py)
-     +
-Qt DLLs + GStreamer DLLs + QML dirs  (windeployqt + deploy_dlls.bat)
-     │
-     └─► makensis G-Control-Setup.nsi
-              └─► G-Control-Setup-v2.2.0.exe  (~117 MB LZMA)
-```
+**Post-install:** Sets `GST_PLUGIN_PATH` in HKCU (user env, no reboot). Creates Start Menu + Desktop shortcuts. Registers in 64-bit Add/Remove Programs (`SetRegView 64`).
 
-#### What the installer does
-
-1. Copies all files to `C:\Program Files\G-Control\`
-2. Sets `GST_PLUGIN_PATH=%INSTDIR%\gstreamer-plugins` in HKCU (user env, no reboot)
-3. Creates Start Menu shortcut + Desktop shortcut
-4. Registers uninstaller in Add/Remove Programs (`SetRegView 64` — 64-bit hive)
-5. `config\ssh_config.json` installed with `SetOverwrite off` — user config survives reinstall
-
-#### What uninstall does
-
-Removes all installed files and registry entries.
-**Deliberately keeps `config\` folder** — SSH credentials (passwords are in Windows keyring, IP/port
-in the JSON) are preserved across uninstall/reinstall cycles.
-
-#### PyInstaller notes
-
-- `optimize=0` — PLY (used by pycparser, used by cffi, used by cryptography, used by paramiko)
-  stores grammar production rules in function `__doc__` strings. `optimize=2` strips all docstrings,
-  breaking the parser table entirely and silently failing all SSH operations.
-- `sys.frozen` path fix — `__file__` in a onefile frozen exe resolves to the temp `_MEI*` extraction
-  directory (deleted after process exits). Must use `sys.executable` to locate files next to the exe.
+**Uninstall:** Removes all files. Deliberately keeps `config\` folder — user SSH credentials survive reinstall.
 
 ---
 
-## 4. QML Technical Rules (G-Control Specific)
-
-These are constraints discovered during development that apply to all future QML work in this project.
+## 4. QML Rules (Learned the Hard Way)
 
 ### Underscore property signal naming
-QML generates `_fooChanged` signal for `property _foo`. The handler `on_FooChanged` is unreliable.
-**Fix:** Wrap in a non-underscore alias:
+QML generates `_fooChanged` for `property _foo`. The handler `on_FooChanged` is unreliable.
+Wrap in a non-underscore alias:
 ```qml
 property bool _rightPanelOpen: false
-property bool panelOpenWatcher: _rightPanelOpen   // no underscore
-onPanelOpenWatcherChanged: { /* reliable */ }
+property bool panelOpenWatcher: _rightPanelOpen  // no underscore — reliable
+onPanelOpenWatcherChanged: { ... }
 ```
 
 ### Flickable event stealing
-A `Flickable` with `flickableDirection: Flickable.VerticalFlick` will steal mouse press events
-from overlapping `MouseArea` items at the same or lower z-level.
-**Fix:** Set `MouseArea.z` to 6 (above Flickable's effective grab level of 5) AND
-`preventStealing: true` on handles that share an axis with the Flickable scroll direction.
+`Flickable` with `flickableDirection: VerticalFlick` steals mouse events from overlapping
+`MouseArea` at the same or lower z. Fix: raise MouseArea to z:6 AND set `preventStealing: true`
+on handles sharing an axis with the Flickable scroll direction.
 
-### Qt Canvas 2D (QML)
-`ctx.ellipse()` and `ctx.roundRect()` do **not** exist in Qt's Canvas 2D implementation.
-Use `arc()`, `bezierCurveTo()`, `lineTo()`, and `moveTo()` only.
+### Qt Canvas 2D
+`ctx.ellipse()` and `ctx.roundRect()` do **not** exist in Qt Canvas 2D.
+Use `arc()`, `bezierCurveTo()`, `lineTo()`, `moveTo()` only.
 
 ### WFB mode — never persist
-`_wfbMode` must start as `""` and be fetched live. Persisting via `saveGlobalSetting` causes
-stale green display after disconnect (the saved value survives app restart).
+`_wfbMode` must start as `""` and always be fetched live.
+Persisting via `saveGlobalSetting` causes stale green display after disconnect.
 
 ### QProcess output drain before commandFinished
-QProcess can buffer stdout/stderr after the `finished` signal fires. Always drain
-`readAllStandardOutput()` + `readAllStandardError()` inside `_onFinished()` and emit
-`outputReady` before emitting `commandFinished`. Otherwise QML clears the fetch flag
-and ignores the last chunk of output.
+Always drain `readAllStandardOutput()` + `readAllStandardError()` inside `_onFinished()`
+and emit `outputReady` before emitting `commandFinished`. QProcess can buffer after `finished` fires.
+
+### PyInstaller frozen path
+Never use `__file__` to locate files next to the exe when frozen.
+`__file__` → `%TEMP%\_MEI*\` (deleted after process exits). Use `sys.executable`.
 
 ---
 
@@ -530,8 +715,8 @@ and ignores the last chunk of output.
 
 | Version | Date | Tag | Branch | Highlights |
 |---------|------|-----|--------|------------|
-| v2.1.0 | 2026-03-20 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | First stable release — all core features working |
-| v2.2.0 | 2026-03-22 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | Resizable panel (all 4 edges), WFB stale-green fix, camera-params, Windows installer |
+| v2.1.0 | 2026-03-20 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | First stable release — all core features |
+| v2.2.0 | 2026-03-22 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | Resizable panel, WFB stale-green fix, camera-params, installer |
 
 ---
 
@@ -539,26 +724,21 @@ and ignores the last chunk of output.
 
 ### Session 1 — 2026-03-20 (Initial Integration)
 
-**Goal:** Build the full PXLABS layer inside QGC from scratch.
+**Goal:** Build the full PXLABS layer inside QGC.
 
-**What was built:**
-- `PXLABSCommandRunner.h/.cc` — C++ singleton, QProcess wrapper, registered to QML
-- `ConnectionControl.qml`, `PXLABSSettings.qml`, `CompanionControl.qml`, `RelayControl.qml` — all settings pages
-- `FlyViewCustomLayer.qml` — System Control panel + camera switch panel
-- `FlyViewToolBar.qml` additions — Air-TX chip, connection status chips
-- `tools/pxlabs_cli.py` — full SSH bridge with all subcommands
-- Build/deploy/launch scripts
+**What was built:** PXLABSCommandRunner, all 4 settings pages, FlyViewCustomLayer,
+FlyViewToolBar chips, pxlabs_cli.py with all subcommands, build/deploy/launch scripts.
 
-**Bugs fixed during integration:**
+**Bugs fixed:**
 
 | Bug | Root Cause | Fix |
 |-----|-----------|-----|
-| `IndentationError` in cli.py | Orphaned `if action == "front-switch":` line after code reorder | Restored indentation |
-| UnicodeEncodeError on WFB ● | Windows cp1252 console codec rejects U+25CF | `stdout.reconfigure(encoding="utf-8", errors="replace")` at startup |
-| SSH terminal window title issue | `start cmd /k "ssh..."` treats quoted string as window title → ssh not found | Removed inner quotes: `start "" cmd /k ssh ...` |
-| QProcess output buffering | `print()` buffered under pipe mode | Added `flush=True` to all `print()` calls in `run_cmd()` |
-| Last output chunk lost | `commandFinished` emitted before QProcess buffer fully drained | Drain `readAllStandardOutput/Error()` in `_onFinished()` before emitting `commandFinished` |
-| Air-TX temp not reading | NIC detection using wrong method | Read `/etc/default/wifibroadcast` first for actual WFB NIC, fall back to procfs |
+| `IndentationError` in cli.py | Orphaned `if action == "front-switch":` after code reorder | Restored |
+| UnicodeEncodeError on WFB ● | Windows cp1252 rejects U+25CF | `reconfigure(encoding="utf-8")` |
+| SSH terminal not opening | `start cmd /k "ssh..."` — quoted string treated as window title | `start "" cmd /k ssh ...` |
+| QProcess output buffered | `print()` default buffering under pipe | `flush=True` on all `print()` |
+| Last output chunk lost | `commandFinished` before QProcess buffer drained | Drain both streams in `_onFinished()` first |
+| Air-TX temp not reading | NIC detection guessed wrong interface | Read `/etc/default/wifibroadcast` first |
 
 **Released:** v2.1.0
 
@@ -570,25 +750,25 @@ and ignores the last chunk of output.
 
 | Bug | Root Cause | Fix |
 |-----|-----------|-----|
-| WFB mode shows green after disconnect | `_wfbMode` loaded from `saveGlobalSetting` on startup | Remove persistence, start as `""`, fetch once on panel open |
-| Periodic busy indicator | Multiple commands sharing `_busy` flag across pages via singleton broadcast | Per-page boolean flags + `bgRetryTimer` |
-| Service list not rendering / duplicating | Timing issue in dynamic `_svcNames` list population | Fixed population sequence |
-| Panel wrong size on startup | Layout restore order wrong | Fixed: restore width → height → y → clamp |
-| WFB mode sync wrong | Parse logic incorrect | Rewrote: match `SA:active/inactive` + `CA:active/inactive` lines explicitly |
-| Single-axis resize not working | `leftResizeHandle` + `bottomResizeHandle` at z:5 — Flickable inside `rpContent` (z:0) propagates grab to z:5, stealing vertical drag | Raise all handles to z:6, add `preventStealing: true` |
+| WFB shows green after disconnect | `_wfbMode` loaded from `saveGlobalSetting` at startup | Remove persistence, start `""`, fetch on panel open |
+| Random busy indicator | Shared `_busy` flag across pages via singleton broadcast | Per-page flags + `bgRetryTimer` |
+| Service list broken | Timing issue in dynamic `_svcNames` population | Fixed population order |
+| Panel wrong size | Layout restore order wrong | Fixed: width → height → y → clamp |
+| WFB mode wrong | Parse logic incorrect | Match `SA:active/inactive` + `CA:active/inactive` lines explicitly |
+| Single-axis resize broken | Handles at z:5 — Flickable propagates grab to z:5, stealing vertical drag | Raise to z:6, add `preventStealing: true` |
 
 **Features added:**
 
-| Feature | Details |
-|---------|---------|
-| Top-edge resize handle | New `topResizeHandle`; math: `newH = pressH - dy`, `newY = pressY + dy` (bottom fixed) |
-| camera-query full detail | Changed from `v4l2-ctl --list-formats-ext` to `sudo vision_config_manager list-details <dev>` |
-| camera-params action | New CLI: `companion camera-params --device --resolution --fps --format` → `vision_config_manager set-cam-params` |
-| Remove Capture section | QGC has native capture; removed redundant PXLABS Capture section from CompanionControl |
-| Remove "Apply Camera" button | Camera switch already covered by top section; removed from Advanced |
-| "Set Params" → "Apply" | Rename to match established naming convention |
-| Companion page icon | `camera.svg` → `servers.svg` (companion is an air-unit server, not a camera) |
-| PXLABS brand chip in toolbar | Static label between Air-TX chip and PX4 logo |
+| Feature | Implementation |
+|---------|---------------|
+| Top-edge resize | New `topResizeHandle`; `newH = pressH - dy`, `newY = pressY + dy` |
+| camera-query full detail | `sudo vision_config_manager list-details <dev>` (was v4l2-ctl --list-formats-ext) |
+| camera-params | CLI: `companion camera-params` → `vision_config_manager set-cam-params` |
+| Remove Capture section | QGC has native capture; PXLABS section removed |
+| Remove "Apply Camera" | Redundant with camera switch section |
+| "Set Params" → "Apply" | Naming consistency |
+| Companion icon | `camera.svg` → `servers.svg` |
+| PXLABS toolbar chip | Static brand chip between Air-TX and PX4 logo |
 
 **Released:** v2.2.0
 
@@ -596,43 +776,38 @@ and ignores the last chunk of output.
 
 ### Session 3 — 2026-03-22 (Windows Installer)
 
-**Goal:** Ship a zero-dependency `G-Control-Setup.exe`.
+**Goal:** Zero-dependency `G-Control-Setup.exe`.
 
-**What was built:**
-- `tools/pxlabs_cli.spec` — PyInstaller spec for standalone CLI exe
-- `installer/G-Control-Setup.nsi` — NSIS installer script
-- `installer/EnvVarUpdate.nsh` — NSIS env var helper (bundled locally)
+**What was built:** `pxlabs_cli.spec`, `G-Control-Setup.nsi`, `EnvVarUpdate.nsh`.
 
 **Bugs fixed:**
 
 | Bug | Root Cause | Fix |
 |-----|-----------|-----|
-| `python: can't open pxlabs_cli.py` after install | Runner called `python pxlabs_cli.py` — .py not present in install dir; default path was `.py` | Default → `.exe`; runner detects `.exe` extension and runs directly |
-| pycparser warnings + all SSH broken | `optimize=2` in spec strips docstrings; PLY uses docstrings as grammar rules for cffi/cryptography/paramiko | `optimize=2` → `optimize=0` |
-| SSH timeout — wrong IP | Frozen `__file__` points to `%TEMP%\_MEI*\` extraction dir; config read from empty temp location | `sys.frozen` check: use `sys.executable` for path resolution when frozen |
-| Two Add/Remove Programs entries | NSIS default writes to 32-bit `WOW6432Node` hive even for 64-bit install | Added `SetRegView 64` to NSIS script |
+| `python: can't open pxlabs_cli.py` | Runner called `python .py`; .py not in install dir | Default → `.exe`; detect `.exe` → run directly |
+| All SSH broken (pycparser) | `optimize=2` strips docstrings; PLY uses them as grammar rules | `optimize=0` |
+| SSH timeout — wrong IP | Frozen `__file__` → temp dir → empty config → wrong IP | `sys.frozen` check: use `sys.executable` |
+| Two Add/Remove Programs entries | NSIS writes to 32-bit `WOW6432Node` by default | `SetRegView 64` |
 
 ---
 
 ## 7. Build & Deploy Reference
 
 ```bat
-# Full rebuild (CMD — not bash, pause blocks bash)
+# Full rebuild from CMD (not bash — pause blocks)
 build_pxlabs.bat
 
-# Full rebuild (bash / Claude Code — no pause)
+# Full rebuild from bash / Claude Code
 cmd //c "E:\\qgc-pxlabs\\do_build.bat"
 
-# Rebuild CLI exe only
+# Rebuild pxlabs_cli.exe only
 cd E:\qgc-pxlabs\tools
 python -m PyInstaller pxlabs_cli.spec --distpath E:\qgc-pxlabs\build_clean\Release\tools --workpath E:\qgc-pxlabs\build_pyinstaller_work --noconfirm
 
-# Test CLI before packaging
-E:\qgc-pxlabs\build_clean\Release\tools\pxlabs_cli.exe --help
+# Test CLI before packaging (must show real config path, no pycparser warnings)
 E:\qgc-pxlabs\build_clean\Release\tools\pxlabs_cli.exe config show
-# Verify: no pycparser warnings, config path = build_clean\Release\config\ssh_config.json
 
-# Rebuild installer (bump APP_VERSION in .nsi first for new releases)
+# Rebuild installer (bump APP_VERSION in .nsi for new releases)
 cd E:\qgc-pxlabs\installer
 "C:\Program Files (x86)\NSIS\makensis.exe" G-Control-Setup.nsi
 
