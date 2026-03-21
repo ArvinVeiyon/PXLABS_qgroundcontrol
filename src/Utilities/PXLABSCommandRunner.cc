@@ -36,7 +36,7 @@ PXLABSCommandRunner::~PXLABSCommandRunner()
 QString PXLABSCommandRunner::cliPath() const
 {
     QSettings s;
-    QString defaultPath = QDir(QCoreApplication::applicationDirPath()).filePath("tools/pxlabs_cli.py");
+    QString defaultPath = QDir(QCoreApplication::applicationDirPath()).filePath("tools/pxlabs_cli.exe");
     return s.value(kCliPathKey, defaultPath).toString();
 }
 
@@ -73,15 +73,21 @@ void PXLABSCommandRunner::run(const QString& args)
     _lastOutput.clear();
     _setRunning(true);
 
-    // Build argument list: python <cliPath> <args...>
-    // cliPath is passed as its own argument so spaces in the path are safe.
-    QStringList argList;
-    argList << cliPath();
+    // If cliPath is a native executable (.exe), run it directly.
+    // Otherwise, invoke via python interpreter (dev workflow with .py script).
+    const QString cli = cliPath();
     const QStringList extraArgs = args.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-    argList.append(extraArgs);
 
-    _process->setProgram(pythonPath());
-    _process->setArguments(argList);
+    if (cli.endsWith(QLatin1String(".exe"), Qt::CaseInsensitive)) {
+        _process->setProgram(cli);
+        _process->setArguments(extraArgs);
+    } else {
+        QStringList argList;
+        argList << cli;
+        argList.append(extraArgs);
+        _process->setProgram(pythonPath());
+        _process->setArguments(argList);
+    }
     _process->start();
 }
 
@@ -136,7 +142,7 @@ void PXLABSCommandRunner::_onError(QProcess::ProcessError error)
     QString msg;
     switch (error) {
     case QProcess::FailedToStart:
-        msg = QStringLiteral("Failed to start — check Python path in PXLABS Settings.");
+        msg = QStringLiteral("Failed to start — check CLI path in PXLABS Settings.");
         break;
     case QProcess::Crashed:
         msg = QStringLiteral("Process crashed.");

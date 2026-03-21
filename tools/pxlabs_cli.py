@@ -33,7 +33,12 @@ if hasattr(sys.stderr, "reconfigure"):
 import keyring
 import paramiko
 
-ROOT = Path(__file__).resolve().parents[1]
+# When frozen by PyInstaller (onefile), __file__ is inside the temp extraction dir.
+# Use sys.executable to get the real exe location so config is found next to the exe.
+if getattr(sys, "frozen", False):
+    ROOT = Path(sys.executable).resolve().parents[1]   # ..\  relative to tools\pxlabs_cli.exe
+else:
+    ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "ssh_config.json"
 
 # Full path confirmed in companion repo

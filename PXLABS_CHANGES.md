@@ -13,6 +13,18 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 | v2.2.0 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | 2026-03-22 | ✅ Stable |
 | v2.1.0 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | 2026-03-20 | Previous stable |
 
+### Installer (v2.2.0)
+
+`G-Control-Setup-v2.2.0.exe` at `installer\G-Control-Setup-v2.2.0.exe` (~117 MB, LZMA compressed).
+
+- Installs to `C:\Program Files\G-Control\`
+- Bundles `pxlabs_cli.exe` — no Python required on target machine
+- Sets `GST_PLUGIN_PATH` in user environment automatically
+- Creates Start Menu + Desktop shortcuts
+- Registers in Add/Remove Programs (64-bit registry)
+- Config (`config\ssh_config.json`) not overwritten on reinstall — SSH credentials preserved
+- Uninstall keeps `config\` folder
+
 **Development branch:** `PXLABS-v2.1-integration`
 **GitHub:** `https://github.com/ArvinVeiyon/PXLABS_qgroundcontrol`
 
@@ -73,13 +85,17 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 | File | Purpose |
 |------|---------|
 | `src/Utilities/PXLABSCommandRunner.h` | C++ QObject — QProcess wrapper, exposes `PXLABSRunner` singleton to QML |
-| `src/Utilities/PXLABSCommandRunner.cc` | Implementation — runs `python pxlabs_cli.py <args>`, emits signals |
+| `src/Utilities/PXLABSCommandRunner.cc` | Implementation — runs `pxlabs_cli.exe <args>` (installed) or `python pxlabs_cli.py <args>` (dev); auto-detected by `.exe` extension |
 | `src/UI/AppSettings/ConnectionControl.qml` | **Settings page — SSH config for companion + relay. CONFIGURE FIRST before using CLI. Also: Periodic Connection Check settings + Wi-Fi Temperature Polling settings.** |
 | `src/UI/AppSettings/PXLABSSettings.qml` | Settings page — Python path, CLI path, Test CLI |
 | `src/UI/AppSettings/CompanionControl.qml` | Settings page — Camera switch, Camera Device (Advanced: query/set params), System, Services. Capture removed (QGC has native capture). |
 | `src/UI/AppSettings/RelayControl.qml` | Settings page — WFB mode, NICs, System, Services |
 | `tools/pxlabs_cli.py` | CLI bridge — SSH to companion/relay |
+| `tools/pxlabs_cli.spec` | PyInstaller spec — bundles cli.py → pxlabs_cli.exe (optimize=0, sys.frozen path fix) |
+| `installer/G-Control-Setup.nsi` | NSIS installer script — packages full Release\ into setup exe |
+| `installer/EnvVarUpdate.nsh` | NSIS helper — sets/removes GST_PLUGIN_PATH in user environment |
 | `build_pxlabs.bat` | Build script — VS2022 + Qt 6.8.3, Z: subst for space-free path |
+| `do_build.bat` | No-pause build wrapper usable from bash/Claude Code |
 | `deploy_dlls.bat` | **Run after EVERY build** — copies GStreamer DLLs + Qt DLLs + pxlabs_cli.py to build_clean/Release |
 | `Launch-GControl.bat` | **Always use to launch** — sets GST_PLUGIN_PATH, GST_REGISTRY_REUSE_PLUGIN_SCANNER=no |
 | `Launch-GControl-Debug.bat` | Debug launch — writes GStreamer log to Release\gst_debug.log |
@@ -104,7 +120,7 @@ import QGroundControl.PXLABS
 ```
 Then call: `PXLABSRunner.run("companion front-switch")` etc.
 
-**C++ prepends** `python <cli_path>` — QML passes args only, not the full command.
+**C++ auto-detects:** if `cliPath` ends with `.exe`, runs it directly; otherwise prepends `python <cli_path>` (dev workflow). QML passes args only.
 
 Signals available on `PXLABSRunner`:
 - `outputReady(text)` — stdout lines as they arrive
@@ -172,6 +188,44 @@ python pxlabs_cli.py config set \
 - `deploy_dlls.bat` creates `build_clean\lib\gstreamer-1.0` — required by GStreamer.cc for internal path resolution
 - `Launch-GControl.bat` sets `GST_PLUGIN_PATH` + `GST_REGISTRY_REUSE_PLUGIN_SCANNER=no`
 - For debug: use `Launch-GControl-Debug.bat` — writes `Release\gst_debug.log`
+
+---
+
+## Session Changes (2026-03-22 — Installer)
+
+### installer/G-Control-Setup.nsi + EnvVarUpdate.nsh (NEW)
+- NSIS installer script packaging full `build_clean\Release\` into `G-Control-Setup-v2.2.0.exe`
+- Installs to `C:\Program Files\G-Control\`, sets `GST_PLUGIN_PATH` (HKCU), creates shortcuts, registers uninstaller
+- `SetRegView 64` — writes to 64-bit registry hive (not WOW6432Node)
+- `SetOverwrite off` for `config\ssh_config.json` — user settings survive reinstall
+- `EnvVarUpdate.nsh` bundled locally (not relying on NSIS system Include dir)
+
+### tools/pxlabs_cli.spec
+- `optimize=2` → `optimize=0` — PLY/pycparser uses function docstrings as grammar rules; stripping them breaks cffi → cryptography → paramiko → all SSH commands fail
+
+### tools/pxlabs_cli.py
+- Added `sys.frozen` check for config path resolution:
+  ```python
+  if getattr(sys, "frozen", False):
+      ROOT = Path(sys.executable).resolve().parents[1]   # real install dir
+  else:
+      ROOT = Path(__file__).resolve().parents[1]          # dev: relative to .py
+  ```
+  Without this, frozen exe uses `__file__` which points to `%TEMP%\_MEI*\` extraction dir → config read from empty temp location → wrong IP → SSH timeout on every command.
+
+### src/Utilities/PXLABSCommandRunner.cc
+- Default `cliPath` changed from `tools/pxlabs_cli.py` → `tools/pxlabs_cli.exe`
+- `run()` now detects `.exe` extension and runs cli directly (no python prepend):
+  ```cpp
+  if (cli.endsWith(".exe", Qt::CaseInsensitive)) {
+      _process->setProgram(cli);
+      _process->setArguments(extraArgs);
+  } else {
+      // dev workflow: python pxlabs_cli.py <args>
+      _process->setProgram(pythonPath());
+      _process->setArguments(QStringList{cli} + extraArgs);
+  }
+  ```
 
 ---
 
