@@ -6,6 +6,18 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 
 ---
 
+## Release History
+
+| Version | Tag | Branch | Date | Status |
+|---------|-----|--------|------|--------|
+| v2.2.0 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | 2026-03-22 | ✅ Stable |
+| v2.1.0 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | 2026-03-20 | Previous stable |
+
+**Development branch:** `PXLABS-v2.1-integration`
+**GitHub:** `https://github.com/ArvinVeiyon/PXLABS_qgroundcontrol`
+
+---
+
 ## Native Files Touched (Additions Only)
 
 ### 1. `src/QGCApplication.cc`
