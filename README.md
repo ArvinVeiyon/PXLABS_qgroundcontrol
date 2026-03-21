@@ -9,21 +9,29 @@
 | **App name** | G-Control |
 | **Base** | QGroundControl v5.0.8 |
 | **Branch** | `PXLABS-v2.1-integration` |
-| **Release** | `release/PXLABS-v2.1` · tag `PXLABS-v2.1.0` |
+| **Latest release** | `release/PXLABS-v2.2` · tag `PXLABS-v2.2.0` |
+| **Installer** | `G-Control-Setup-v2.2.0.exe` (~117 MB, no dependencies) |
 | **Build** | VS2022 + Qt 6.8.3 + GStreamer 1.22.12 |
 | **Companion** | Vind-Roz · RPi5 8GB · Ubuntu 24.04 · ROS2 Jazzy · PX4 v1.16.0-rc1 |
 | **Relay** | Vind-Rly · RPi5 · Ubuntu 24.04 · wifibroadcast@gs |
 
 ## PXLABS Features
 
-- **System Control panel** — right-edge slide-out: companion + relay power, SSH terminal, WFB standalone/cluster mode switch with live status glyph on pull tab
+- **System Control panel** — right-edge resizable slide-out: companion + relay power, SSH terminal, WFB standalone/cluster mode switch with live status glyph on pull tab
 - **Air-TX Temp chip** — live WFB RF card temperature in toolbar (green/orange/red colour-coded)
 - **Connection Status chips** — Comp + Relay reachability dots in toolbar, auto-refresh every 30 s
 - **Camera switch panel** — draggable front/bottom/split-front-bottom/split-bottom-front
+- **Camera Device Advanced** — query full camera detail, set resolution/fps/format via `vision_config_manager`
 - **Settings pages** — Connection (SSH config), PXLABS Settings, Companion Control, Relay Station
+- **Windows installer** — `G-Control-Setup-v2.2.0.exe`, no Python or manual DLL setup needed
 
 ## Quick Start
 
+### Install (end users)
+Run `G-Control-Setup-v2.2.0.exe` → installs to `C:\Program Files\G-Control\`, creates shortcuts, sets GStreamer env automatically.
+First launch: Settings → Connection → enter SSH credentials → Apply.
+
+### Build from source (developers)
 ```
 1. Build   →  run build_pxlabs.bat  (requires VS2022 + Qt 6.8.3 in PATH)
 2. Deploy  →  deploy_dlls.bat runs automatically after build
@@ -33,9 +41,10 @@
 
 ## Documentation
 
-For the full technical change log, new files added, CLI reference, QML patterns, and known issues:
-
-**[PXLABS_CHANGES.md](PXLABS_CHANGES.md)**
+| Document | Purpose |
+|----------|---------|
+| [PXLABS_CHANGES.md](PXLABS_CHANGES.md) | Technical change log — all modified/added files, CLI reference, QML patterns, session notes |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Development journal — full session history, bug log, architecture notes, build reference |
 
 ## Reference
 
