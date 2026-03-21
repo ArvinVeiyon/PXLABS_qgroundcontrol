@@ -16,7 +16,7 @@ import QGroundControl.PXLABS
 SettingsPage {
     id: root
 
-    property bool _busy: PXLABSRunner.running
+    property bool _busy: false   // own commands only — not global runner state
 
     // ---- load saved values on open ----
     Component.onCompleted: {
@@ -31,9 +31,7 @@ SettingsPage {
         relayUserField.text       = QGroundControl.loadGlobalSetting("pxlabs_relay_user",       "vind-admin")
 
         connCheckEnable.checked   = QGroundControl.loadGlobalSetting("pxlabs_conn_check_enabled",  "false") === "true"
-        connIntervalField.text    = QGroundControl.loadGlobalSetting("pxlabs_conn_check_interval", "300")
-        connTimeoutField.text     = QGroundControl.loadGlobalSetting("pxlabs_conn_check_timeout",  "5")
-        connAttemptsField.text    = QGroundControl.loadGlobalSetting("pxlabs_conn_check_attempts", "3")
+        connIntervalField.text    = QGroundControl.loadGlobalSetting("pxlabs_conn_check_interval", "120")
 
         wifiTempEnable.checked    = QGroundControl.loadGlobalSetting("pxlabs_wifi_temp_enabled",   "false") === "true"
         wifiIntervalField.text    = QGroundControl.loadGlobalSetting("pxlabs_wifi_temp_interval",  "60")
@@ -41,15 +39,25 @@ SettingsPage {
 
     Connections {
         target: PXLABSRunner
-        function onOutputReady(text)         { outputArea.text = text }
+        function onOutputReady(text)         { if (_busy) outputArea.text = text }
         function onCommandFinished(exitCode) {
+            if (!_busy) return
+            _busy = false
             if (exitCode !== 0) outputArea.text += qsTr("\n[Exit code: %1]").arg(exitCode)
             else outputArea.text += qsTr("\n✓ Saved")
         }
-        function onCommandFailed(errorText)  { outputArea.text = qsTr("ERROR: ") + errorText }
+        function onCommandFailed(errorText)  {
+            if (!_busy) return
+            _busy = false
+            outputArea.text = qsTr("ERROR: ") + errorText
+        }
     }
 
     function _saveCompanion() {
+        if (PXLABSRunner.running) {
+            outputArea.text = qsTr("⚠ Runner busy — please retry in a moment.")
+            return
+        }
         QGroundControl.saveGlobalSetting("pxlabs_primary_ip",     primaryIpField.text.trim())
         QGroundControl.saveGlobalSetting("pxlabs_primary_port",   primaryPortField.text.trim())
         QGroundControl.saveGlobalSetting("pxlabs_secondary_ip",   secondaryIpField.text.trim())
@@ -57,6 +65,7 @@ SettingsPage {
         QGroundControl.saveGlobalSetting("pxlabs_companion_user", compUserField.text.trim())
 
         outputArea.text = ""
+        _busy = true
         let args = "config set"
             + " --primary-ip "     + primaryIpField.text.trim()
             + " --primary-port "   + primaryPortField.text.trim()
@@ -70,11 +79,16 @@ SettingsPage {
     }
 
     function _saveRelay() {
+        if (PXLABSRunner.running) {
+            outputArea.text = qsTr("⚠ Runner busy — please retry in a moment.")
+            return
+        }
         QGroundControl.saveGlobalSetting("pxlabs_relay_ip",   relayIpField.text.trim())
         QGroundControl.saveGlobalSetting("pxlabs_relay_port", relayPortField.text.trim())
         QGroundControl.saveGlobalSetting("pxlabs_relay_user", relayUserField.text.trim())
 
         outputArea.text = ""
+        _busy = true
         let args = "config set"
             + " --relay-ip "       + relayIpField.text.trim()
             + " --relay-ssh-port " + relayPortField.text.trim()
@@ -179,17 +193,17 @@ SettingsPage {
     }
 
     // -----------------------------------------------------------------------
-    // Periodic Connection Check
+    // Connection Status Polling
     // -----------------------------------------------------------------------
     SettingsGroupLayout {
         Layout.fillWidth: true
-        heading: qsTr("Periodic Connection Check")
+        heading: qsTr("Connection Status Polling")
 
         RowLayout {
             Layout.fillWidth: true
             QGCCheckBoxSlider {
                 id:               connCheckEnable
-                text:             qsTr("Enable periodic connection check")
+                text:             qsTr("Enable periodic Comp/Relay status check in toolbar")
                 Layout.fillWidth: true
                 onCheckedChanged: QGroundControl.saveGlobalSetting("pxlabs_conn_check_enabled", checked ? "true" : "false")
             }
@@ -198,19 +212,7 @@ SettingsPage {
             Layout.fillWidth: true
             enabled: connCheckEnable.checked
             QGCLabel { Layout.preferredWidth: lw; text: qsTr("Check Interval (sec)") }
-            QGCTextField { id: connIntervalField;  Layout.fillWidth: true; placeholderText: "300"; inputMethodHints: Qt.ImhDigitsOnly }
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            enabled: connCheckEnable.checked
-            QGCLabel { Layout.preferredWidth: lw; text: qsTr("Timeout (sec)") }
-            QGCTextField { id: connTimeoutField;   Layout.fillWidth: true; placeholderText: "5";   inputMethodHints: Qt.ImhDigitsOnly }
-        }
-        RowLayout {
-            Layout.fillWidth: true
-            enabled: connCheckEnable.checked
-            QGCLabel { Layout.preferredWidth: lw; text: qsTr("Max Attempts") }
-            QGCTextField { id: connAttemptsField;  Layout.fillWidth: true; placeholderText: "3";   inputMethodHints: Qt.ImhDigitsOnly }
+            QGCTextField { id: connIntervalField; Layout.fillWidth: true; placeholderText: "120"; inputMethodHints: Qt.ImhDigitsOnly }
         }
         RowLayout {
             Layout.fillWidth: true
@@ -218,11 +220,16 @@ SettingsPage {
                 text:      qsTr("Apply")
                 onClicked: {
                     QGroundControl.saveGlobalSetting("pxlabs_conn_check_interval", connIntervalField.text.trim())
-                    QGroundControl.saveGlobalSetting("pxlabs_conn_check_timeout",  connTimeoutField.text.trim())
-                    QGroundControl.saveGlobalSetting("pxlabs_conn_check_attempts", connAttemptsField.text.trim())
-                    outputArea.text = qsTr("✓ Connection check settings saved.")
+                    outputArea.text = qsTr("✓ Connection check settings saved. Restart fly view to apply interval change.")
                 }
             }
+        }
+        QGCLabel {
+            Layout.fillWidth: true
+            wrapMode:       Text.WordWrap
+            font.pointSize: ScreenTools.smallFontPointSize
+            color:          QGroundControl.globalPalette.colorGrey
+            text:           qsTr("Disabled by default. Recommended ≥ 120 s — short intervals add SSH traffic over the WFB-NG tunnel. The ↻ button in the toolbar always triggers a manual check.")
         }
     }
 
@@ -263,7 +270,7 @@ SettingsPage {
             wrapMode:       Text.WordWrap
             font.pointSize: ScreenTools.smallFontPointSize
             color:          QGroundControl.globalPalette.colorGrey
-            text:           qsTr("Changes take effect when the fly view is reloaded. Enable/disable is immediate.")
+            text:           qsTr("Recommended ≥ 60 s to limit SSH traffic over the WFB-NG tunnel. Enable/disable is immediate; interval change takes effect on next fly view load.")
         }
     }
 
@@ -294,7 +301,12 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Show Config")
                 enabled:   !_busy
-                onClicked: { outputArea.text = ""; PXLABSRunner.run("config show") }
+                onClicked: {
+                    if (PXLABSRunner.running) { outputArea.text = qsTr("⚠ Runner busy — please retry."); return }
+                    outputArea.text = ""
+                    _busy = true
+                    PXLABSRunner.run("config show")
+                }
             }
 
             QGCButton {

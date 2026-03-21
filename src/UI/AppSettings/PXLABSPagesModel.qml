@@ -21,14 +21,14 @@ ListModel {
     ListElement {
         name: qsTr("Companion")
         url: "qrc:/qml/QGroundControl/AppSettings/CompanionControl.qml"
-        iconUrl: "qrc:/InstrumentValueIcons/camera.svg"
+        iconUrl: "qrc:/InstrumentValueIcons/servers.svg"
         pageVisible: function() { return true }
     }
 
     ListElement {
         name: qsTr("Relay Control")
         url: "qrc:/qml/QGroundControl/AppSettings/RelayControl.qml"
-        iconUrl: "qrc:/InstrumentValueIcons/wifi.svg"
+        iconUrl: "qrc:/InstrumentValueIcons/station.svg"
         pageVisible: function() { return true }
     }
 }

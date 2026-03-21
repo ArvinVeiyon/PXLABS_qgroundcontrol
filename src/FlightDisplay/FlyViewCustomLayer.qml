@@ -1,8 +1,8 @@
 /****************************************************************************
  *
  * PXLABS G-Control — FlyView custom layer
- * - Left-edge  "Transmission Mode" panel (dish antenna, WFB standalone/cluster)
- * - Right-edge "System Control" panel (Companion + Relay power/SSH + WFB mode)
+ * - "System Control" panel (Companion + Relay power/SSH + WFB mode)
+ *   Fixed to right edge, resizable via edge/corner handles.
  * - Draggable camera-switch panel (drag via header only)
  * - Wi-Fi Temp chip lives in FlyViewToolBar.qml (toolbar, left of PX4 logo)
  *
@@ -34,25 +34,38 @@ Item {
     // -----------------------------------------------------------------------
     // State
     // -----------------------------------------------------------------------
-    property bool   _panelInitDone:      false
-    property bool   _rightPanelOpen:     false
-    // WFB mode: "standalone" | "cluster" | ""
-    property string _wfbMode:           QGroundControl.loadGlobalSetting("pxlabs_wfb_mode", "")
-    property bool   _wfbStatusFetch:    false   // true while querying relay wfb status
+    property bool   _panelInitDone:   false
+    property bool   _rightPanelOpen:  false
+    // WFB mode: "standalone" | "cluster" | "" — never persisted, always fetched fresh
+    property string _wfbMode:        ""
+    property bool   _wfbStatusFetch: false   // true while querying relay wfb status
+    property bool   _wfbInitFetched: false   // true after first fetch since app start
+
+    // Fetch WFB mode once the first time the panel is opened
+    property bool panelOpenWatcher: _rightPanelOpen
+    onPanelOpenWatcherChanged: {
+        if (panelOpenWatcher && !_wfbInitFetched)
+            Qt.callLater(_checkWfbMode)
+    }
 
     // Panel status (SSH / other panel commands)
-    property string _panelStatus:        ""
-    property bool   _panelCmdActive:     false
+    property string _panelStatus:    ""
+    property bool   _panelCmdActive: false
 
-    readonly property real _pad:      ScreenTools.defaultFontPixelWidth
-    readonly property real _rpWidth:  ScreenTools.defaultFontPixelWidth * 23
-    readonly property real _tabW:     ScreenTools.defaultFontPixelWidth * 2.2
-    readonly property real _btnH:     ScreenTools.defaultFontPixelHeight * 2.1
-    readonly property real _sshBtnH:  ScreenTools.defaultFontPixelHeight * 1.85
+    readonly property real _pad:     ScreenTools.defaultFontPixelWidth
+    readonly property real _rpWidth: ScreenTools.defaultFontPixelWidth * 28   // default content width
+    readonly property real _tabW:    ScreenTools.defaultFontPixelWidth * 2.2
+    readonly property real _btnH:    ScreenTools.defaultFontPixelHeight * 2.5
+    readonly property real _sshBtnH: ScreenTools.defaultFontPixelHeight * 2.2
 
+    // Resizable panel geometry
+    property real   _rpContentW:     ScreenTools.defaultFontPixelWidth * 28
+    readonly property real _rpMinW:  ScreenTools.defaultFontPixelWidth * 18
+    readonly property real _rpMinH:  ScreenTools.defaultFontPixelHeight * 15
+    readonly property real _rpHdrH:  ScreenTools.defaultFontPixelHeight * 2.5   // header height
     // Camera panel
-    readonly property real _camW:     ScreenTools.defaultFontPixelWidth  * 22
-    readonly property real _camBtnH:  ScreenTools.defaultFontPixelHeight * 2.4
+    readonly property real _camW:    ScreenTools.defaultFontPixelWidth  * 22
+    readonly property real _camBtnH: ScreenTools.defaultFontPixelHeight * 2.4
 
     // -----------------------------------------------------------------------
     // WFB post-switch check timer (waits for relay switch to settle)
@@ -65,7 +78,7 @@ Item {
     }
 
     // -----------------------------------------------------------------------
-    // Helpers
+    // Helpers — camera panel
     // -----------------------------------------------------------------------
     function _clamp(p) {
         if (!p) return
@@ -97,6 +110,45 @@ Item {
         _savePos()
     }
 
+    // -----------------------------------------------------------------------
+    // Helpers — System Control panel layout
+    // -----------------------------------------------------------------------
+    // Position panel flush against right edge
+    function _updateRpX() {
+        rightPanel.x = Math.max(0, _root.width - rightPanel.width)
+    }
+
+    function _saveRpLayout() {
+        if (!_panelInitDone) return
+        QGroundControl.saveGlobalSetting("pxlabs_rp_y", Math.round(rightPanel.y).toString())
+        QGroundControl.saveGlobalSetting("pxlabs_rp_w", Math.round(_rpContentW).toString())
+        QGroundControl.saveGlobalSetting("pxlabs_rp_h", Math.round(rightPanel.height).toString())
+    }
+
+    function _restoreRpLayout() {
+        const sy = parseInt(QGroundControl.loadGlobalSetting("pxlabs_rp_y", "-1"))
+        const sw = parseInt(QGroundControl.loadGlobalSetting("pxlabs_rp_w", "-1"))
+        const sh = parseInt(QGroundControl.loadGlobalSetting("pxlabs_rp_h", "-1"))
+        _rpContentW       = (sw >= _rpMinW) ? sw : _rpWidth
+        const defH        = Math.max(_rpMinH,
+                                     _root.height
+                                     - _toolInsets.topEdgeRightInset
+                                     - _toolInsets.bottomEdgeRightInset
+                                     - ScreenTools.defaultFontPixelHeight * 7)
+        rightPanel.height = (sh >= _rpMinH) ? sh : defH
+        rightPanel.y      = (sy >= 0) ? sy : (_toolInsets.topEdgeRightInset + ScreenTools.defaultFontPixelHeight * 7)
+        _clampRpY()
+        _updateRpX()
+    }
+
+    // Clamp Y only — X is always determined by side
+    function _clampRpY() {
+        rightPanel.y = Math.max(0, Math.min(rightPanel.y, _root.height - rightPanel.height))
+    }
+
+    // -----------------------------------------------------------------------
+    // Other helpers
+    // -----------------------------------------------------------------------
     function _confirm(title, msg, cmd) {
         mainWindow.showMessageDialog(title, msg, Dialog.Yes | Dialog.No,
                                      function() { PXLABSRunner.run(cmd) })
@@ -111,7 +163,8 @@ Item {
 
     function _checkWfbMode() {
         if (PXLABSRunner.running) return
-        _wfbStatusFetch = true
+        _wfbInitFetched  = true
+        _wfbStatusFetch  = true
         PXLABSRunner.run("relay wfb refresh")   // outputs SA:active/inactive, CA:active/inactive
     }
 
@@ -123,8 +176,6 @@ Item {
 
         function onOutputReady(text) {
             if (_wfbStatusFetch) {
-                // relay wfb refresh outputs: SA:<status>, CA:<status>
-                // SA=standalone service, CA=cluster service
                 var saMatch = text.match(/^SA:(\S+)/m)
                 var caMatch = text.match(/^CA:(\S+)/m)
                 if (saMatch && caMatch) {
@@ -133,16 +184,14 @@ Item {
                     var newMode = ""
                     if (sa === "active" && ca !== "active")       newMode = "standalone"
                     else if (ca === "active" && sa !== "active")  newMode = "cluster"
-                    else if (sa === "active" && ca === "active")  newMode = "standalone"  // both → prefer standalone
+                    else if (sa === "active" && ca === "active")  newMode = "standalone"
                     if (newMode !== "") {
                         _root._wfbMode = newMode
-                        QGroundControl.saveGlobalSetting("pxlabs_wfb_mode", newMode)
                     }
                 }
                 return
             }
             if (_panelCmdActive) {
-                // Show SSH open message or other command output in panel status
                 const t = text.trim()
                 if (t.length > 0) _panelStatus = t
             }
@@ -192,33 +241,32 @@ Item {
     }
 
     // -----------------------------------------------------------------------
-    // Right-edge "System Control" expandable panel
+    // System Control panel — draggable + resizable
     // -----------------------------------------------------------------------
     Rectangle {
-        id:      rightPanel
-        anchors.right:        parent.right
-        anchors.top:          parent.top
-        anchors.bottom:       parent.bottom
-        anchors.topMargin:    _toolInsets.topEdgeRightInset + ScreenTools.defaultFontPixelHeight * 7
-        anchors.bottomMargin: _toolInsets.bottomEdgeRightInset
-
-        width:  _rightPanelOpen ? _rpWidth + _tabW : _tabW
-        Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        id:     rightPanel
+        z:      10
+        x:      0          // managed by _restoreRpLayout
+        y:      0          // managed by _restoreRpLayout
+        width:  _rightPanelOpen ? _rpContentW + _tabW : _tabW
+        height: 300        // managed by _restoreRpLayout
 
         color:        Qt.rgba(0.04, 0.06, 0.10, 0.93)
         border.color: Qt.rgba(0.3, 0.6, 1.0, 0.18)
         border.width: 1
+        clip:         true
+        onWidthChanged: _root._updateRpX()   // re-pin to edge when panel opens/closes
 
-        // ---- pull tab ----
+        // ── Pull tab (left edge when side=left, right edge when side=right) ─
         Rectangle {
             id:     pullTab
             width:  _tabW
             height: ScreenTools.defaultFontPixelHeight * 6.5
             radius: 3
-            anchors.right:      parent.right
-            anchors.top:        parent.top
-            anchors.topMargin:  ScreenTools.defaultFontPixelHeight * 2
-            color: tabMa.pressed ? Qt.rgba(0.3,0.6,1.0,0.28) :
+            x:             parent.width - _tabW
+            anchors.top:       parent.top
+            anchors.topMargin: ScreenTools.defaultFontPixelHeight * 2
+            color: tabMa.pressed       ? Qt.rgba(0.3,0.6,1.0,0.28) :
                    tabMa.containsMouse ? Qt.rgba(0.3,0.6,1.0,0.16) : Qt.rgba(1,1,1,0.06)
             border.color: Qt.rgba(0.3,0.6,1.0,0.35); border.width: 1
 
@@ -226,9 +274,8 @@ Item {
                 anchors.centerIn: parent
                 spacing: 2
 
-                // WFB mode glyph — visible when panel is closed
                 QGCLabel {
-                    visible:            !_rightPanelOpen
+                    visible:                  !_rightPanelOpen
                     anchors.horizontalCenter: parent.horizontalCenter
                     text:  _root._wfbMode === "standalone" ? "◉" :
                            _root._wfbMode === "cluster"    ? "⬡" : "⊙"
@@ -253,19 +300,58 @@ Item {
             }
         }
 
-        // ---- content ----
+        // ── Content (opposite side of pull tab) ───────────────────────────
         Item {
-            anchors.left:   parent.left
-            anchors.right:  pullTab.left
+            id:             rpContent
+            x:              0
+            width:          parent.width - _tabW
             anchors.top:    parent.top
             anchors.bottom: parent.bottom
             visible:        _rightPanelOpen
             clip:           true
 
+            // ── Header ──
+            Item {
+                id:     rpHeader
+                width:  parent.width
+                height: _rpHdrH
+
+                RowLayout {
+                    anchors { fill: parent; leftMargin: _pad * 0.6; rightMargin: _pad * 0.6 }
+                    spacing: _pad * 0.4
+
+                    QGCLabel {
+                        text:           "⚡  System Control"
+                        font.bold:      true
+                        font.pointSize: ScreenTools.defaultFontPointSize + 0.5
+                        color:          "#8BBFFF"
+                        Layout.fillWidth: true
+                    }
+                    QGCLabel {
+                        text:           "⤢"
+                        color:          Qt.rgba(0.5, 0.7, 1.0, 0.4)
+                        font.pointSize: ScreenTools.smallFontPointSize
+                    }
+                }
+            }
+
+            // Header separator
+            Rectangle {
+                id:     rpSep
+                width:  parent.width
+                height: 1
+                anchors.top: rpHeader.bottom
+                color:       Qt.rgba(0.3, 0.6, 1.0, 0.35)
+            }
+
+            // ── Scrollable content ──
             Flickable {
-                anchors.fill: parent
-                contentHeight: panelCol.implicitHeight + _pad * 2
-                contentWidth:  width
+                anchors.top:    rpSep.bottom
+                anchors.left:   parent.left
+                anchors.right:  parent.right
+                anchors.bottom: parent.bottom
+                contentHeight:  panelCol.implicitHeight + _pad * 2
+                contentWidth:   width
                 flickableDirection: Flickable.VerticalFlick
                 clip: true
 
@@ -275,18 +361,10 @@ Item {
                     anchors.top:     parent.top
                     anchors.left:    parent.left
                     anchors.right:   parent.right
-                    anchors.margins: _pad * 0.9
-                    spacing:         _pad * 0.5
+                    anchors.margins: _pad
+                    spacing:         _pad * 0.7
 
-                    // ── Header ─────────────────────────────────
-                    QGCLabel {
-                        text: "⚡  System Control"
-                        font.bold: true; font.pointSize: ScreenTools.defaultFontPointSize + 0.5
-                        color: "#8BBFFF"; Layout.fillWidth: true
-                    }
-                    Rectangle { Layout.fillWidth: true; height: 1; color: Qt.rgba(0.3,0.6,1.0,0.35) }
-
-                    // ── Companion ──────────────────────────────
+                    // ── Companion ──────────────────────────────────────
                     QGCLabel {
                         text: "Companion"
                         font.pointSize: ScreenTools.smallFontPointSize; font.bold: true
@@ -337,7 +415,7 @@ Item {
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: Qt.rgba(1,1,1,0.08) }
 
-                    // ── Relay Station ──────────────────────────
+                    // ── Relay Station ───────────────────────────────────
                     QGCLabel {
                         text: "Relay Station"
                         font.pointSize: ScreenTools.smallFontPointSize; font.bold: true
@@ -388,7 +466,7 @@ Item {
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: Qt.rgba(1,1,1,0.08) }
 
-                    // ── WFB Mode ───────────────────────────────
+                    // ── WFB Mode ────────────────────────────────────────
                     RowLayout {
                         Layout.fillWidth: true; spacing: _pad * 0.4
                         QGCLabel {
@@ -458,11 +536,11 @@ Item {
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: Qt.rgba(1,1,1,0.08) }
 
-                    // ── Status ─────────────────────────────────
+                    // ── Status ──────────────────────────────────────────
                     QGCLabel {
-                        visible: PXLABSRunner.running || _panelStatus !== ""
-                        text:    PXLABSRunner.running ? "⏳  Running…" : _panelStatus
-                        color:   PXLABSRunner.running ? QGroundControl.globalPalette.colorOrange :
+                        visible: _panelCmdActive || _panelStatus !== ""
+                        text:    _panelCmdActive ? "Running…" : _panelStatus
+                        color:   _panelCmdActive ? QGroundControl.globalPalette.colorOrange :
                                  _panelStatus.startsWith("✓") ? "#5AD65A" : "#FF7070"
                         font.pointSize: ScreenTools.smallFontPointSize
                         Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
@@ -470,6 +548,163 @@ Item {
                 }
             }
         }
+
+        // ── Left-edge resize handle (right-side only — drag left to grow) ──
+        MouseArea {
+            id:              leftResizeHandle
+            z:               6
+            visible:         _rightPanelOpen
+            width:           8
+            preventStealing: true
+            anchors { left: parent.left; top: parent.top; topMargin: _rpHdrH + 1; bottom: parent.bottom; bottomMargin: 10 }
+            hoverEnabled: true
+            cursorShape:  Qt.SizeHorCursor
+
+            property real _pressGlobalX: 0
+            property real _pressW:       0
+
+            onPressed:  (mouse) => {
+                var g       = mapToItem(_root, mouse.x, mouse.y)
+                _pressGlobalX = g.x
+                _pressW       = _root._rpContentW
+            }
+            onPositionChanged: (mouse) => {
+                if (!pressed) return
+                var gx    = mapToItem(_root, mouse.x, mouse.y).x
+                var delta = gx - _pressGlobalX
+                _root._rpContentW = Math.max(_root._rpMinW, Math.min(_pressW - delta, _root.width * 0.75))
+                _root._updateRpX()
+            }
+            onReleased: { _root._saveRpLayout() }
+        }
+
+        // ── Bottom-edge resize handle ──────────────────────────────────────
+        MouseArea {
+            id:              bottomResizeHandle
+            z:               6
+            visible:         _rightPanelOpen
+            height:          8
+            preventStealing: true
+            anchors { left: parent.left; right: parent.right; bottom: parent.bottom; leftMargin: 10 }
+            hoverEnabled: true
+            cursorShape:  Qt.SizeVerCursor
+
+            property real _pressGlobalY: 0
+            property real _pressH:       0
+
+            onPressed:  (mouse) => {
+                var g       = mapToItem(_root, mouse.x, mouse.y)
+                _pressGlobalY = g.y
+                _pressH       = rightPanel.height
+            }
+            onPositionChanged: (mouse) => {
+                if (!pressed) return
+                var gy   = mapToItem(_root, mouse.x, mouse.y).y
+                var newH = Math.max(_root._rpMinH,
+                           Math.min(_pressH + (gy - _pressGlobalY),
+                                    _root.height - rightPanel.y))
+                rightPanel.height = newH
+            }
+            onReleased: { _root._clampRpY(); _root._saveRpLayout() }
+        }
+
+        // ── Top-edge resize handle — drag up/down to move top edge ──────────
+        MouseArea {
+            id:              topResizeHandle
+            z:               6
+            visible:         _rightPanelOpen
+            height:          8
+            preventStealing: true
+            anchors { left: parent.left; right: parent.right; top: parent.top; rightMargin: _tabW }
+            hoverEnabled: true
+            cursorShape:  Qt.SizeVerCursor
+
+            property real _pressGlobalY: 0
+            property real _pressH:       0
+            property real _pressY:       0
+
+            onPressed: (mouse) => {
+                var g       = mapToItem(_root, mouse.x, mouse.y)
+                _pressGlobalY = g.y
+                _pressH       = rightPanel.height
+                _pressY       = rightPanel.y
+            }
+            onPositionChanged: (mouse) => {
+                if (!pressed) return
+                var gy   = mapToItem(_root, mouse.x, mouse.y).y
+                var dy   = gy - _pressGlobalY
+                var newH = _pressH - dy
+                var newY = _pressY + dy
+                // clamp: height >= minimum
+                if (newH < _root._rpMinH) {
+                    newH = _root._rpMinH
+                    newY = _pressY + _pressH - newH
+                }
+                // clamp: top edge >= screen top
+                if (newY < 0) {
+                    newY = 0
+                    newH = _pressY + _pressH
+                }
+                rightPanel.y      = newY
+                rightPanel.height = newH
+            }
+            onReleased: { _root._saveRpLayout() }
+        }
+
+        // ── Bottom-left corner resize handle (right-side only) ────────────
+        Rectangle {
+            id:      cornerHandle
+            z:       6
+            visible: _rightPanelOpen
+            width:   12; height: 12
+            anchors { left: parent.left; bottom: parent.bottom }
+            color:   cornerMa.containsMouse ? Qt.rgba(0.3,0.6,1.0,0.5)
+                                            : Qt.rgba(0.3,0.6,1.0,0.18)
+            radius:  2
+
+            QGCLabel {
+                anchors.centerIn: parent
+                text:           "⤡"
+                color:          Qt.rgba(0.6, 0.85, 1.0, 0.9)
+                font.pointSize: ScreenTools.smallFontPointSize - 1
+            }
+
+            MouseArea {
+                id:           cornerMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape:  Qt.SizeBDiagCursor
+
+                property real _pressGlobalX: 0
+                property real _pressGlobalY: 0
+                property real _pressW:       0
+                property real _pressH:       0
+                property real _pressPanelX:  0
+
+                onPressed:  (mouse) => {
+                    var g       = mapToItem(_root, mouse.x, mouse.y)
+                    _pressGlobalX = g.x
+                    _pressGlobalY = g.y
+                    _pressW       = _root._rpContentW
+                    _pressH       = rightPanel.height
+                    _pressPanelX  = rightPanel.x
+                }
+                onPositionChanged: (mouse) => {
+                    if (!pressed) return
+                    var g    = mapToItem(_root, mouse.x, mouse.y)
+                    var dx   = g.x - _pressGlobalX
+                    var dy   = g.y - _pressGlobalY
+                    var newW = Math.max(_root._rpMinW, Math.min(_pressW - dx, _root.width * 0.75))
+                    var newH = Math.max(_root._rpMinH,
+                               Math.min(_pressH + dy, _root.height - rightPanel.y))
+                    _root._rpContentW = newW
+                    rightPanel.height = newH
+                    _root._updateRpX()
+                }
+                onReleased: { _root._saveRpLayout() }
+            }
+        }
+
     }
 
     // -----------------------------------------------------------------------
@@ -559,7 +794,12 @@ Item {
     }
 
     // -----------------------------------------------------------------------
-    Component.onCompleted: { Qt.callLater(_restorePos) }
-    onWidthChanged:  { _clamp(cameraPanel); _savePos() }
-    onHeightChanged: { _clamp(cameraPanel); _savePos() }
+    Component.onCompleted: {
+        Qt.callLater(function() {
+            _restoreRpLayout()
+            _restorePos()
+        })
+    }
+    onWidthChanged:  { _clamp(cameraPanel); _savePos(); _updateRpX() }
+    onHeightChanged: { _clamp(cameraPanel); _savePos(); _clampRpY() }
 }

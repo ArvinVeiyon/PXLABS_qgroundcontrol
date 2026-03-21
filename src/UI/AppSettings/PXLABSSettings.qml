@@ -15,16 +15,22 @@ import QGroundControl.PXLABS
 SettingsPage {
     id: root
 
-    property bool _busy: PXLABSRunner.running
+    property bool _busy: false   // own commands only — not global runner state
 
     // Keep output area updated
     Connections {
         target: PXLABSRunner
-        function onOutputReady(text)          { outputArea.text = text }
-        function onCommandFinished(exitCode)  {
+        function onOutputReady(text)         { if (_busy) outputArea.text = text }
+        function onCommandFinished(exitCode) {
+            if (!_busy) return
+            _busy = false
             if (exitCode !== 0) outputArea.text += qsTr("\n[Exit code: %1]").arg(exitCode)
         }
-        function onCommandFailed(errorText)   { outputArea.text = qsTr("ERROR: ") + errorText }
+        function onCommandFailed(errorText)  {
+            if (!_busy) return
+            _busy = false
+            outputArea.text = qsTr("ERROR: ") + errorText
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -95,7 +101,12 @@ SettingsPage {
                 text:      qsTr("Test CLI (config show)")
                 enabled:   !_busy
                 onClicked: {
+                    if (PXLABSRunner.running) {
+                        outputArea.text = qsTr("⚠ Runner busy — please retry in a moment.")
+                        return
+                    }
                     outputArea.text = ""
+                    _busy = true
                     PXLABSRunner.run("config show")
                 }
             }

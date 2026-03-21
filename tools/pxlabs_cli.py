@@ -9,7 +9,8 @@ so it does not appear in `ps aux` on the remote host.
 New subcommands vs v2.0:
   config show                       — print resolved config
   companion camera-apply            — apply camera settings via vision_config_manager
-  companion camera-query --device   — query camera details via v4l2-ctl
+  companion camera-query --device   — query camera details via vision_config_manager list-details
+  companion camera-params --device --resolution --fps --format  — set resolution/fps/format
 """
 
 import argparse
@@ -289,39 +290,27 @@ done'""")
     if action == "camera-query":
         device = getattr(args, "device", "/dev/video0")
         return run_cmd(*ssh_exec(ip, port, username, password,
-                                  f"v4l2-ctl --list-formats-ext -d {device} 2>&1"))
+                                  f"sudo vision_config_manager list-details {device} 2>&1"))
+
+    if action == "camera-params":
+        device     = getattr(args, "device",     "/dev/video0")
+        resolution = getattr(args, "resolution", "1920x1080")
+        fps        = getattr(args, "fps",        "60")
+        fmt        = getattr(args, "format",     "MJPG")
+        return run_cmd(*ssh_exec(ip, port, username, password,
+                                  f"sudo vision_config_manager set-cam-params {device} {resolution} {fps} --format {fmt} 2>&1"))
 
     if action in ("capture-front", "capture-bottom"):
         front = action == "capture-front"
         device = companion_camera_device(swap, front=front)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        remote_path = f"/home/roz/Model_image/Rozcam_{timestamp}.jpg"
+        remote_path = f"/home/{username}/Model_image/Rozcam_{timestamp}.jpg"
         local_path = Path.home() / "Pictures" / f"Rozcam_{timestamp}.jpg"
         local_path.parent.mkdir(parents=True, exist_ok=True)
         ok, out, err, code = ssh_exec(ip, port, username, password, f"Rozcam -i {device}")
         if not ok:
             return run_cmd(ok, out, err, code)
         time.sleep(2)
-        if sftp_get(ip, port, username, password, remote_path, str(local_path)):
-            print(f"Saved: {local_path}")
-            return 0
-        return 1
-
-    if action in ("record-front", "record-bottom"):
-        if not getattr(args, "duration", None) or args.duration <= 0:
-            print("ERROR: --duration required for record", file=sys.stderr)
-            return 1
-        front = action == "record-front"
-        device = companion_camera_device(swap, front=front)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        remote_path = f"/home/roz/Model_video/Rozcam_{timestamp}.mp4"
-        local_path = Path.home() / "Videos" / f"Rozcam_{timestamp}.mp4"
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        ok, out, err, code = ssh_exec(ip, port, username, password,
-                                       f"Rozcam -v {device} {args.duration}")
-        if not ok:
-            return run_cmd(ok, out, err, code)
-        time.sleep(int(args.duration) + 2)
         if sftp_get(ip, port, username, password, remote_path, str(local_path)):
             print(f"Saved: {local_path}")
             return 0
@@ -568,18 +557,16 @@ def main():
     p_comp = sub.add_parser("companion")
     p_comp.add_argument("action", choices=[
         "front-switch", "bottom-switch", "split-front-bottom", "split-bottom-front",
-        "camera-apply", "camera-query",
+        "camera-apply", "camera-query", "camera-params",
         "wifi-temp",
         "capture-front", "capture-bottom",
-        "record-front", "record-bottom",
         "reboot", "shutdown", "ssh-terminal",
     ])
-    p_comp.add_argument("--swap",     action="store_true", help="swap camera mapping")
-    p_comp.add_argument("--duration", type=int,            help="record duration in seconds")
-    p_comp.add_argument("--device",   default="/dev/video0", help="camera device path")
-    p_comp.add_argument("--resolution", default="1920x1080")
-    p_comp.add_argument("--fps",       default="60")
-    p_comp.add_argument("--format",    default="MJPG")
+    p_comp.add_argument("--swap",       action="store_true", help="swap camera mapping")
+    p_comp.add_argument("--device",     default="/dev/video0", help="camera device path")
+    p_comp.add_argument("--resolution", default="1920x1080",   help="resolution e.g. 1920x1080")
+    p_comp.add_argument("--fps",        default="60",          help="frames per second")
+    p_comp.add_argument("--format",     default="MJPG",        help="pixel format e.g. MJPG or UYVY")
 
     # relay
     p_relay = sub.add_parser("relay")

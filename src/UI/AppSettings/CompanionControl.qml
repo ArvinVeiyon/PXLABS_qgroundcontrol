@@ -14,21 +14,84 @@ import QGroundControl.PXLABS
 SettingsPage {
     id: root
 
-    property bool   _busy:  PXLABSRunner.running
-    property string _swap:  swapCheck.checked ? " --swap" : ""
+    property bool   _busy:        false   // own commands only — not global runner state
+    property string _swap:        swapCheck.checked ? " --swap" : ""
+    property string _bgRetryArgs: ""      // queued args while waiting for bg abort to settle
+
+    // After aborting a background fetch, retry the user command once the runner is free
+    Timer {
+        id:       bgRetryTimer
+        interval: 400
+        repeat:   false
+        onTriggered: {
+            if (PXLABSRunner.running) return   // still busy — give up silently
+            outputArea.text = ""
+            root._busy = true
+            PXLABSRunner.run(root._bgRetryArgs)
+        }
+    }
+
+    // Services — dynamic list populated by refresh
+    property bool   _svcRefreshActive: false
+    property string _svcLastOutput:    ""
+    property var    _svcNames: [
+        "mavlink.router.service", "microxrce-agent.service",
+        "rc_control_node.service", "vision_streaming.service",
+        "tfmini.service", "ros2_px4_translation_node.service",
+        "block-traffic.service", "wifibroadcast@drone.service",
+        "system_files_sync.timer"
+    ]
 
     function _run(args) {
+        if (PXLABSRunner.running) {
+            if (QGroundControl.loadGlobalSetting("pxlabs_bg_active", "0") === "1") {
+                // Background poll is running — abort it and retry user command automatically
+                _bgRetryArgs = args
+                PXLABSRunner.abort()
+                bgRetryTimer.start()
+            } else {
+                outputArea.text = qsTr("⚠ Runner busy — please retry in a moment.")
+            }
+            return
+        }
         outputArea.text = ""
+        _busy = true
         PXLABSRunner.run(args)
+    }
+
+    function _resolvedSvc() {
+        const t = customSvcField.text.trim()
+        return t.length > 0 ? t : svcCombo.currentText
     }
 
     Connections {
         target: PXLABSRunner
-        function onOutputReady(text)         { outputArea.text = text }
+        function onOutputReady(text) {
+            if (!_busy) return
+            outputArea.text = text
+            if (_svcRefreshActive) _svcLastOutput = text
+        }
         function onCommandFinished(exitCode) {
+            if (!_busy) return
+            _busy = false
+            if (_svcRefreshActive) {
+                _svcRefreshActive = false
+                var lines = _svcLastOutput.split('\n')
+                var names = []
+                for (var i = 0; i < lines.length; i++) {
+                    var parts = lines[i].trim().split('|')
+                    if (parts.length >= 2 && parts[0].length > 0) names.push(parts[0])
+                }
+                if (names.length > 0) _svcNames = names
+            }
             if (exitCode !== 0) outputArea.text += qsTr("\n[Exit code: %1]").arg(exitCode)
         }
-        function onCommandFailed(errorText)  { outputArea.text = qsTr("ERROR: ") + errorText }
+        function onCommandFailed(errorText) {
+            if (!_busy) return
+            _busy = false
+            _svcRefreshActive = false
+            outputArea.text = qsTr("ERROR: ") + errorText
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -75,38 +138,15 @@ SettingsPage {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Capture
-    // -----------------------------------------------------------------------
-    SettingsGroupLayout {
-        Layout.fillWidth: true
-        heading: qsTr("Capture (saves to Pictures\\)")
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: ScreenTools.defaultFontPixelWidth
-
-            QGCButton {
-                text:      qsTr("Capture Front")
-                enabled:   !_busy
-                onClicked: _run("companion capture-front" + _swap)
-            }
-
-            QGCButton {
-                text:      qsTr("Capture Bottom")
-                enabled:   !_busy
-                onClicked: _run("companion capture-bottom" + _swap)
-            }
-        }
-    }
 
     // -----------------------------------------------------------------------
-    // Camera Apply / Query
+    // Camera Device (Advanced)
     // -----------------------------------------------------------------------
     SettingsGroupLayout {
         Layout.fillWidth: true
         heading: qsTr("Camera Device (Advanced)")
 
+        // ── Device + switch row ──────────────────────────────────────────
         RowLayout {
             Layout.fillWidth: true
             spacing: ScreenTools.defaultFontPixelWidth
@@ -119,15 +159,44 @@ SettingsPage {
             }
 
             QGCButton {
-                text:      qsTr("Apply Camera")
+                text:      qsTr("Query Details")
                 enabled:   !_busy
-                onClicked: _run("companion camera-apply --device " + deviceCombo.currentText)
+                onClicked: _run("companion camera-query --device " + deviceCombo.currentText)
+            }
+        }
+
+        // ── Resolution / FPS / Format params row ────────────────────────
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: ScreenTools.defaultFontPixelWidth
+
+            QGCLabel { text: qsTr("Resolution:") }
+            QGCTextField {
+                id:            resField
+                text:          "1920x1080"
+                implicitWidth: ScreenTools.defaultFontPixelWidth * 12
+            }
+
+            QGCLabel { text: qsTr("FPS:") }
+            QGCTextField {
+                id:            fpsField
+                text:          "60"
+                implicitWidth: ScreenTools.defaultFontPixelWidth * 6
+            }
+
+            QGCLabel { text: qsTr("Format:") }
+            QGCComboBox {
+                id:    fmtCombo
+                model: ["MJPG", "UYVY"]
             }
 
             QGCButton {
-                text:      qsTr("Query Formats")
+                text:      qsTr("Apply")
                 enabled:   !_busy
-                onClicked: _run("companion camera-query --device " + deviceCombo.currentText)
+                onClicked: _run("companion camera-params --device " + deviceCombo.currentText
+                                + " --resolution " + resField.text.trim()
+                                + " --fps "        + fpsField.text.trim()
+                                + " --format "     + fmtCombo.currentText)
             }
         }
     }
@@ -227,11 +296,17 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Refresh Status")
                 enabled:   !_busy
-                onClicked: _run("services refresh --target companion")
+                onClicked: { _svcRefreshActive = true; _run("services refresh --target companion") }
+            }
+
+            QGCLabel {
+                text:           qsTr("(list updates after refresh)")
+                color:          QGroundControl.globalPalette.colorGrey
+                font.pointSize: ScreenTools.smallFontPointSize
             }
         }
 
-        // Service selector + actions
+        // Service selector — populated from refresh output
         RowLayout {
             Layout.fillWidth: true
             spacing: ScreenTools.defaultFontPixelWidth
@@ -239,37 +314,59 @@ SettingsPage {
             QGCLabel { text: qsTr("Service:") }
 
             QGCComboBox {
-                id:    svcCombo
+                id:               svcCombo
                 Layout.fillWidth: true
-                model: [
-                    "mavlink.router.service",
-                    "microxrce-agent.service",
-                    "rc_control_node.service",
-                    "vision_streaming.service",
-                    "tfmini.service",
-                    "ros2_px4_translation_node.service",
-                    "block-traffic.service",
-                    "wifibroadcast@drone.service",
-                    "system_files_sync.timer"
-                ]
+                model:            _svcNames
             }
+        }
+
+        // Custom override — type any service name not in the list
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: ScreenTools.defaultFontPixelWidth
+
+            QGCLabel { text: qsTr("Custom:") }
+
+            QGCTextField {
+                id:               customSvcField
+                Layout.fillWidth: true
+                placeholderText:  qsTr("or type any service name…")
+            }
+        }
+
+        // Action buttons
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: ScreenTools.defaultFontPixelWidth
 
             QGCButton {
                 text:      qsTr("Start")
                 enabled:   !_busy
-                onClicked: _run("services start --target companion --service " + svcCombo.currentText)
+                onClicked: _run("services start --target companion --service " + _resolvedSvc())
             }
 
             QGCButton {
                 text:      qsTr("Stop")
                 enabled:   !_busy
-                onClicked: _run("services stop --target companion --service " + svcCombo.currentText)
+                onClicked: _run("services stop --target companion --service " + _resolvedSvc())
             }
 
             QGCButton {
                 text:      qsTr("Restart")
                 enabled:   !_busy
-                onClicked: _run("services restart --target companion --service " + svcCombo.currentText)
+                onClicked: _run("services restart --target companion --service " + _resolvedSvc())
+            }
+
+            QGCButton {
+                text:      qsTr("Enable")
+                enabled:   !_busy
+                onClicked: _run("services enable --target companion --service " + _resolvedSvc())
+            }
+
+            QGCButton {
+                text:      qsTr("Disable")
+                enabled:   !_busy
+                onClicked: _run("services disable --target companion --service " + _resolvedSvc())
             }
         }
     }
@@ -315,7 +412,7 @@ SettingsPage {
         TextArea {
             id:               outputArea
             Layout.fillWidth: true
-            height:           ScreenTools.defaultFontPixelHeight * 16
+            height:           ScreenTools.defaultFontPixelHeight * 26
             readOnly:         true
             font.family:      "Courier New"
             font.pointSize:   ScreenTools.smallFontPointSize

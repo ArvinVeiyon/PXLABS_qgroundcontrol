@@ -64,7 +64,7 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 | `src/Utilities/PXLABSCommandRunner.cc` | Implementation — runs `python pxlabs_cli.py <args>`, emits signals |
 | `src/UI/AppSettings/ConnectionControl.qml` | **Settings page — SSH config for companion + relay. CONFIGURE FIRST before using CLI. Also: Periodic Connection Check settings + Wi-Fi Temperature Polling settings.** |
 | `src/UI/AppSettings/PXLABSSettings.qml` | Settings page — Python path, CLI path, Test CLI |
-| `src/UI/AppSettings/CompanionControl.qml` | Settings page — Camera switch, Capture, Camera Device (Advanced), System, Services. Record section removed (QGC has its own). |
+| `src/UI/AppSettings/CompanionControl.qml` | Settings page — Camera switch, Camera Device (Advanced: query/set params), System, Services. Capture removed (QGC has native capture). |
 | `src/UI/AppSettings/RelayControl.qml` | Settings page — WFB mode, NICs, System, Services |
 | `tools/pxlabs_cli.py` | CLI bridge — SSH to companion/relay |
 | `build_pxlabs.bat` | Build script — VS2022 + Qt 6.8.3, Z: subst for space-free path |
@@ -104,17 +104,16 @@ Signals available on `PXLABSRunner`:
 ## CLI Command Reference
 
 ```
-# Companion camera
+# Companion camera switch
 python pxlabs_cli.py companion front-switch
 python pxlabs_cli.py companion bottom-switch
 python pxlabs_cli.py companion split-front-bottom
 python pxlabs_cli.py companion split-bottom-front
-python pxlabs_cli.py companion camera-apply --device /dev/video0
-python pxlabs_cli.py companion camera-query --device /dev/video0
 
-# Companion capture
-python pxlabs_cli.py companion capture-front
-python pxlabs_cli.py companion capture-bottom
+# Companion camera device (advanced)
+python pxlabs_cli.py companion camera-apply --device /dev/video0
+python pxlabs_cli.py companion camera-query --device /dev/video0              # full detail via vision_config_manager list-details
+python pxlabs_cli.py companion camera-params --device /dev/video0 --resolution 1920x1080 --fps 60 --format MJPG
 
 # Companion system
 python pxlabs_cli.py companion reboot
@@ -207,6 +206,70 @@ python pxlabs_cli.py config set \
 - Pull tab moved to top of panel (was vertically centered)
 - Pull tab now shows **WFB mode glyph** (◉ green = standalone / ⬡ blue = cluster / ⊙ grey = unknown) when panel is closed
 - Button heights reduced (`2.5→2.1`, `2.2→1.85`) + spacing tightened — WFB Mode section now visible without scrolling
+
+---
+
+---
+
+## v2.2 — Session Changes (2026-03-22)
+
+### FlyViewCustomLayer.qml — System Control panel: resizable + WFB mode fix
+
+**Resizable panel (all edges):**
+- Panel changed from fixed/anchored to **draggable + resizable**
+- Left-edge resize handle — drag to change panel width
+- Bottom-edge resize handle — drag to change panel height (bottom moves, top fixed)
+- Top-edge resize handle — drag to change panel height (top moves, bottom fixed)
+- Bottom-left corner handle — resize both axes simultaneously
+- All handles: `z:6` + `preventStealing:true` — prevents Flickable inside panel from stealing mouse grab (was the root cause of single-axis handles not working)
+- Panel size + Y position saved/restored via `saveGlobalSetting`
+
+**WFB mode stale-green fix:**
+- `_wfbMode` no longer loaded from persisted settings on startup — always starts as `""` (grey ⊙)
+- `saveGlobalSetting("pxlabs_wfb_mode")` removed — no persistence
+- WFB mode fetched **once** automatically when panel is first opened (`panelOpenWatcher` property)
+- Subsequent checks: only via ↻ Refresh button or after a mode switch (4s timer)
+- No more stale green when relay is disconnected
+
+**Panel busy tracking:**
+- `_panelCmdActive` replaces `PXLABSRunner.running` for status indicator — tracks own panel commands only, not global runner state
+
+---
+
+### FlyViewToolBar.qml — UI polish + PXLABS brand chip
+
+- Added **PXLABS brand chip** between Air-TX chip and PX4 logo
+- Air-TX chip now anchors to `pxLabsChip.left` instead of `brandImage.left`
+- Air-TX font size: `smallFontPointSize` → `defaultFontPointSize` (more legible)
+- Temperature label format improved: `"Air-TX  val °C"` (proper spacing)
+- Connection status widget height/width/spacing tweaked for better fit
+
+---
+
+### CompanionControl.qml — Busy isolation, service list, camera cleanup
+
+- `_busy` now tracks **own commands only** — not affected by background connection polls
+- Added `bgRetryTimer` (400ms) — if background fetch is running when user clicks a button, it aborts the fetch and retries the user command automatically
+- Dynamic **service list** — `_svcNames` populated at runtime via ↻ Refresh instead of hardcoded
+- **Capture section removed** — QGC has native image capture; `Capture Front` / `Capture Bottom` buttons gone
+- **Camera Device (Advanced)** — removed redundant "Apply Camera" button (covered by Camera Switch buttons above)
+- Renamed "Set Params" → **"Apply"** to match v1.4 drone control app naming
+- Added **Resolution / FPS / Format** inputs with Apply button → calls `camera-params`
+
+---
+
+### PXLABSPagesModel.qml
+
+- Companion settings page icon changed from `camera.svg` → **`servers.svg`** (companion is an air unit computer, not a camera)
+
+---
+
+### pxlabs_cli.py — camera-query + new camera-params action
+
+- `camera-query`: now calls `sudo vision_config_manager list-details {device}` — returns **full detail** (v4l2-ctl `--all`, udevadm info, supported formats). Was previously calling `v4l2-ctl --list-formats-ext` (formats only).
+- Added **`camera-params`** action: `vision_config_manager set-cam-params {device} {resolution} {fps} --format {fmt}`
+  - New CLI args: `--resolution` (default `1920x1080`), `--fps` (default `60`), `--format` (default `MJPG`)
+  - Matches v1.4 standalone app "Apply" behaviour in Camera Settings tab
 
 ---
 
