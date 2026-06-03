@@ -43,6 +43,7 @@ First launch: Settings → Connection → enter SSH credentials → Apply.
 
 | Document | Purpose |
 |----------|---------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Full system architecture — network diagram, data flows, WFB-NG link config, software stack |
 | [PXLABS_CHANGES.md](PXLABS_CHANGES.md) | Technical change log — all modified/added files, CLI reference, QML patterns, session notes |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Development journal — full session history, bug log, architecture notes, build reference |
 
