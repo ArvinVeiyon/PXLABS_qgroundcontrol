@@ -19,7 +19,6 @@ OutFile       "G-Control-Setup-v${APP_VERSION}.exe"
 InstallDir    "${INSTALL_DIR}"
 InstallDirRegKey HKLM "${REG_KEY}" "InstallLocation"
 RequestExecutionLevel admin
-SetRegView 64
 SetCompressor /SOLID lzma
 Unicode True
 
@@ -46,6 +45,7 @@ Unicode True
 ;----- Install ----------------------------------------------------------------
 Section "G-Control (required)" SecMain
     SectionIn RO
+    SetRegView 64
     SetOutPath "$INSTDIR"
 
     ; ---- Main executable ----
@@ -117,6 +117,7 @@ SectionEnd
 
 ;----- Uninstall --------------------------------------------------------------
 Section "Uninstall"
+    SetRegView 64
     ; Remove GST_PLUGIN_PATH
     ${un.EnvVarUpdate} $0 "GST_PLUGIN_PATH" "R" "HKCU" "$INSTDIR\gstreamer-plugins"
 
