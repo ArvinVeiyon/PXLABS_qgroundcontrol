@@ -1003,3 +1003,56 @@ if (exitCode !== 0) {
 ```
 
 `_lastPanelCmd` property added to track which command is currently running.
+
+---
+
+## 9. Known Issues / Pending Improvements
+
+Identified at end of Session 4 (2026-06-04). Not yet fixed. Priority: High → Low.
+
+---
+
+### Bug A (High) — FlyView `_confirm` and camera buttons bypass abort-and-retry
+
+**File:** `src/FlightDisplay/FlyViewCustomLayer.qml`
+
+**Lines affected:** ~428, ~442, ~479, ~493 (WFB mode `_confirm` handler), ~806, ~814, ~826, ~834 (camera switch buttons)
+
+**Symptom:** Clicking WFB mode confirm or any camera switch button while a background poll is running silently drops the command — no feedback, no retry.
+
+**Root cause:** These buttons call `PXLABSRunner.run(args)` directly without going through `_runPanelCmd`. The abort-and-retry logic added in Session 4 only covers `_runPanelCmd`. Direct callers bypass it entirely.
+
+**Fix needed:** Route all `PXLABSRunner.run(args)` calls in `FlyViewCustomLayer.qml` through `_runPanelCmd(args, statusMsg)`, or extract the abort-and-retry guard into a shared helper that these call sites also invoke.
+
+---
+
+### Bug B (High) — Relay services panel shows all "unknown" status
+
+**File:** `tools/pxlabs_cli.py` — `services_actions()` function
+
+**Symptom:** Opening the Relay Station settings page → Services tab shows every service as "unknown" or missing.
+
+**Root cause:** `services_actions()` uses a single hardcoded service list (`wifibroadcast@drone`, `mavlink.router`, `microxrce-agent`, `vision_streaming`, etc.) regardless of whether `--target companion` or `--target relay` is passed. The relay does not run companion services, so `systemctl is-active` returns "unknown" for all of them.
+
+**Fix needed:** Branch the service list on `--target`:
+
+- `--target companion`: current list (unchanged)
+- `--target relay`: `wifibroadcast-cluster@gs.service`, `mavlink.router.service`, `ssh-tunnel-to-companion.service`, `mediamtx.service`, `dhcpd.service`, `relay_files_sync.timer`, `ssh.service`
+
+---
+
+### Bug C (Medium) — No SSH tunnel health visibility
+
+**Symptom:** The Connection Status chips in the toolbar check TCP reachability on `relay:2222`. A successful TCP connection only proves the relay is reachable and port 2222 is open — it does not confirm that the autossh reverse tunnel to the companion is alive. If the WFB link between relay and companion drops, relay:22 is still reachable but relay:2222 returns ECONNREFUSED. The chip currently shows no distinction between these states.
+
+**Fix needed options:**
+1. Add a third chip or change chip colour/icon when TCP to `:2222` fails while TCP to `:22` succeeds (indicates tunnel down, relay up).
+2. Or: query `systemctl is-active ssh-tunnel-to-companion.service` on the relay and surface the result as a tunnel-health glyph.
+
+---
+
+### Bug D (Low) — `mediamtx` not in relay services panel
+
+**Symptom:** `mediamtx` runs on the relay (RTSP re-streamer for camera feeds) and is documented in ARCHITECTURE.md, but it does not appear in the relay services panel in G-Control.
+
+**Fix needed:** Once Bug B is fixed (relay service list corrected), simply add `mediamtx.service` to the relay service list in `services_actions()`. No QML changes required.
