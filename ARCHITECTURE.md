@@ -26,15 +26,16 @@ graph TB
     subgraph RLY["📡  Vind-Rly — Relay Station  ·  RPi5 · Ubuntu 24.04"]
         direction LR
         subgraph RLY_NET["Network Interfaces"]
-            P2P["wlan0\n10.5.6.101 / 24\nP2P Wi-Fi"]
+            P2P["p2p-wlan0-0\n10.5.6.101 / 24\nP2P Wi-Fi"]
             RFGS["wlx00c0cab6db3b\nWFB RF Card\nrtl8812eu"]
             WFBTUN["gs-wfb\n10.5.5.77 / 24\nWFB tunnel NIC"]
-            CPE["eth0 → CPE610\n10.5.7.102 OpenWrt\nCluster node"]
+            CPE["eth0  10.5.7.100 / 24\n→ CPE610  10.5.7.102\nOpenWrt cluster node"]
         end
         subgraph RLY_SVC["Services"]
-            WFBGS["wifibroadcast@gs"]
+            WFBGS["wifibroadcast-cluster@gs"]
             MAVR["mavlink.router\n:14560 → :14550 PC\n:14551 tracker"]
-            TUNN["ssh-tunnel-to-companion\n0.0.0.0:2222 → 10.5.5.87:22"]
+            TUNN["ssh-tunnel-to-companion\nautossh  0.0.0.0:2222 → 10.5.5.87:22"]
+            MTXR["mediamtx\nRTSP streaming server"]
         end
     end
 
@@ -73,7 +74,7 @@ graph TB
 
     %% Drone side
     RFDRN   --- WFBD
-    TUNN    -->|"TCP :22 SSH forward"| RFDRN
+    TUNN    -->|"autossh TCP :22"| RFDRN
     WFBD    <--> MAVCD
     MAVCD   <--> PIX
     ROS2    <--> PIX
@@ -174,10 +175,12 @@ pxlabs_cli.exe  SSH :22
 
 | Service | Purpose |
 |---------|---------|
-| `wifibroadcast@gs` | WFB-NG ground side — video RX, MAVLink + tunnel bidirectional |
-| `mavlink.router` | WFB MAVLink peer → UDP :14550 (PC) + :14551 (tracker) |
-| `ssh-tunnel-to-companion` | Forwards 0.0.0.0:2222 → 10.5.5.87:22 via WFB tunnel NIC |
-| `relay_files_sync.timer` | Periodic config sync |
+| `wifibroadcast-cluster@gs` | WFB-NG ground side (cluster-capable) — video RX, MAVLink + tunnel bidirectional |
+| `mavlink.router` | WFB MAVLink peer :14560 → UDP :14550 (PC) + :14551 (tracker) |
+| `ssh-tunnel-to-companion` | autossh forwards 0.0.0.0:2222 → 10.5.5.87:22 via WFB tunnel NIC |
+| `mediamtx` | RTSP streaming server — low-latency video relay |
+| `dhcpd` | DHCP server for P2P network 10.5.6.0/24 (pool .50–.99, GW 10.5.6.1) |
+| `relay_files_sync.timer` | Daily config sync → ~/codex-relay git repo |
 
 ---
 
@@ -188,7 +191,8 @@ pxlabs_cli.exe  SSH :22
 | Windows PC | Wi-Fi | 10.5.6.50 | P2P network |
 | Vind-Rly | wlan0 | 10.5.6.101 | P2P network |
 | Vind-Rly | gs-wfb | 10.5.5.77 | WFB tunnel endpoint |
-| Vind-Rly | eth0 | → CPE610 10.5.7.102 | Cluster (OpenWrt) |
+| Vind-Rly | eth0 | 10.5.7.100 | Wired link to CPE610 cluster node |
+| CPE610 | — | 10.5.7.102 | OpenWrt cluster node (TP-Link) |
 | Vind-Roz | drone-wfb | 10.5.5.87 | WFB tunnel endpoint + SSH |
 
 ---
