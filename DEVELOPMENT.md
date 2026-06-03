@@ -671,7 +671,7 @@ robust to stderr mixing into `_lastOutput`.
 - `C:\Program Files\G-Control\config\ssh_config.json` (with `SetOverwrite off`)
 - All QML dirs, platform plugins, translations
 
-**Post-install:** Sets `GST_PLUGIN_PATH` in HKCU (user env, no reboot). Creates Start Menu + Desktop shortcuts. Registers in 64-bit Add/Remove Programs (`SetRegView 64`).
+**Post-install:** Sets `GST_PLUGIN_PATH` in HKCU (user env, no reboot). Creates Start Menu + Desktop shortcuts. Registers in 64-bit Add/Remove Programs (`SetRegView 64` inside Section — required by NSIS 3.11+).
 
 **Uninstall:** Removes all files. Deliberately keeps `config\` folder — user SSH credentials survive reinstall.
 
@@ -717,7 +717,7 @@ Never use `__file__` to locate files next to the exe when frozen.
 |---------|------|-----|--------|------------|
 | v2.1.0 | 2026-03-20 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | First stable release — all core features |
 | v2.2.0 | 2026-03-22 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | Resizable panel, WFB stale-green fix, camera-params, installer |
-| v2.2.1 | 2026-06-04 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | Patch — CLI shutdown/reboot hang fix, companion ssh-terminal host key fix, ARCHITECTURE.md |
+| v2.2.1 | 2026-06-04 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | Patch — CLI shutdown/reboot hang fix, companion ssh-terminal host key fix, ARCHITECTURE.md, NSIS 3.11 compat |
 
 ---
 
@@ -788,7 +788,7 @@ FlyViewToolBar chips, pxlabs_cli.py with all subcommands, build/deploy/launch sc
 | `python: can't open pxlabs_cli.py` | Runner called `python .py`; .py not in install dir | Default → `.exe`; detect `.exe` → run directly |
 | All SSH broken (pycparser) | `optimize=2` strips docstrings; PLY uses them as grammar rules | `optimize=0` |
 | SSH timeout — wrong IP | Frozen `__file__` → temp dir → empty config → wrong IP | `sys.frozen` check: use `sys.executable` |
-| Two Add/Remove Programs entries | NSIS writes to 32-bit `WOW6432Node` by default | `SetRegView 64` |
+| Two Add/Remove Programs entries | NSIS writes to 32-bit `WOW6432Node` by default | `SetRegView 64` inside Section (NSIS 3.11: no longer valid at global scope) |
 
 ---
 
@@ -919,3 +919,20 @@ Applied to both Windows (`cmd.exe Popen`) and Linux (`gnome-terminal`) paths.
 ---
 
 **pxlabs_cli.exe rebuilt** after fixes via PyInstaller spec (no new warnings).
+
+---
+
+**Bug 3: NSIS 3.11 — `SetRegView 64` not valid at global scope**
+
+Discovered during v2.2.1 installer build. NSIS 3.11 tightened scope rules — `SetRegView`
+is now only valid inside a `Section` or `Function`. Previously worked at global scope in
+earlier NSIS 3.x versions.
+
+Error:
+```
+Error: command SetRegView not valid outside Section or Function (line 22)
+```
+
+Fix: removed `SetRegView 64` from global scope, added it as the first line inside both
+`Section "G-Control (required)"` (install) and `Section "Uninstall"` — so all registry
+writes in both directions use the 64-bit hive correctly.

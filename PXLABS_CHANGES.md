@@ -10,7 +10,7 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 
 | Version | Tag | Branch | Date | Status |
 |---------|-----|--------|------|--------|
-| v2.2.1 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | 2026-06-04 | ✅ Latest — CLI shutdown/ssh-terminal fixes |
+| v2.2.1 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | 2026-06-04 | ✅ Latest — CLI shutdown/ssh-terminal fixes, NSIS 3.11 compat |
 | v2.2.0 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | 2026-03-22 | Previous stable |
 | v2.1.0 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | 2026-03-20 | Previous stable |
 
@@ -198,7 +198,7 @@ python pxlabs_cli.py config set \
 ### installer/G-Control-Setup.nsi + EnvVarUpdate.nsh (NEW)
 - NSIS installer script packaging full `build_clean\Release\` into `G-Control-Setup-v2.2.0.exe`
 - Installs to `C:\Program Files\G-Control\`, sets `GST_PLUGIN_PATH` (HKCU), creates shortcuts, registers uninstaller
-- `SetRegView 64` — writes to 64-bit registry hive (not WOW6432Node)
+- `SetRegView 64` — writes to 64-bit registry hive (not WOW6432Node); placed inside Sections (required by NSIS 3.11+)
 - `SetOverwrite off` for `config\ssh_config.json` — user settings survive reinstall
 - `EnvVarUpdate.nsh` bundled locally (not relying on NSIS system Include dir)
 
@@ -395,6 +395,12 @@ Full system architecture reference committed to repo root:
 |-----|-----------|-----|
 | `companion/relay shutdown` + `reboot` always reported error in G-Control | `recv_exit_status()` blocks; `shutdown now` kills SSH connection before paramiko can read exit status | Replace with `sudo systemd-run --on-active=0 systemctl poweroff/reboot` — detached from SSH session, returns exit 0 immediately |
 | `companion ssh-terminal` fails silently | Port `:2222` presents companion host key (different from relay:22 key); not in Windows known_hosts | Add `-o StrictHostKeyChecking=no` to SSH command — verified correct via `ssh-keyscan` on live hardware |
+
+### installer/G-Control-Setup.nsi — NSIS 3.11 compatibility fix
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| `Error: command SetRegView not valid outside Section or Function` | NSIS 3.11 no longer allows `SetRegView` at global scope | Moved `SetRegView 64` into both `Section "G-Control"` and `Section "Uninstall"` |
 
 ---
 
