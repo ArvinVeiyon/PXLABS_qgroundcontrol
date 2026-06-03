@@ -51,6 +51,31 @@ Item {
     // Panel status (SSH / other panel commands)
     property string _panelStatus:    ""
     property bool   _panelCmdActive: false
+    property string _panelRetryArgs:   ""
+    property string _panelRetryStatus: ""
+    property string _lastPanelCmd:     ""
+
+    // Abort-and-retry: after aborting a background poll, re-run the queued panel command
+    Timer {
+        id:       _panelRetryTimer
+        interval: 400
+        repeat:   false
+        onTriggered: {
+            if (PXLABSRunner.running) return
+            _root._panelStatus    = _root._panelRetryStatus
+            _root._panelCmdActive = true
+            _root._lastPanelCmd   = _root._panelRetryArgs
+            PXLABSRunner.run(_root._panelRetryArgs)
+        }
+    }
+
+    // Auto-clear status 2.5 s after a successful command
+    Timer {
+        id:       _panelStatusClearTimer
+        interval: 2500
+        repeat:   false
+        onTriggered: _root._panelStatus = ""
+    }
 
     readonly property real _pad:     ScreenTools.defaultFontPixelWidth
     readonly property real _rpWidth: ScreenTools.defaultFontPixelWidth * 28   // default content width
@@ -155,9 +180,22 @@ Item {
     }
 
     function _runPanelCmd(args, statusMsg) {
-        if (PXLABSRunner.running) return
-        _panelStatus = statusMsg
+        if (PXLABSRunner.running) {
+            if (QGroundControl.loadGlobalSetting("pxlabs_bg_active", "0") === "1") {
+                // Background poll running — abort it and retry automatically
+                _panelRetryArgs   = args
+                _panelRetryStatus = statusMsg
+                _panelStatus      = "Waiting…"
+                PXLABSRunner.abort()
+                _panelRetryTimer.start()
+            } else {
+                _panelStatus = "⚠ Busy — retry in a moment"
+            }
+            return
+        }
+        _panelStatus    = statusMsg
         _panelCmdActive = true
+        _lastPanelCmd   = args
         PXLABSRunner.run(args)
     }
 
@@ -204,8 +242,13 @@ Item {
             }
             if (_panelCmdActive) {
                 _panelCmdActive = false
-                if (exitCode !== 0)
+                if (exitCode !== 0) {
                     _panelStatus = "✗ Failed (exit " + exitCode + ")"
+                } else {
+                    if (_root._lastPanelCmd.indexOf("ssh-terminal") >= 0)
+                        _panelStatus = "✓ Terminal opened"
+                    _panelStatusClearTimer.restart()
+                }
             }
         }
 
