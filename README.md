@@ -9,8 +9,8 @@
 | **App name** | G-Control |
 | **Base** | QGroundControl v5.0.8 |
 | **Branch** | `PXLABS-v2.1-integration` |
-| **Latest release** | `release/PXLABS-v2.2` · tag `PXLABS-v2.2.0` |
-| **Installer** | `G-Control-Setup-v2.2.0.exe` (~117 MB, no dependencies) |
+| **Latest release** | `release/PXLABS-v2.2` · tag `PXLABS-v2.2.1` |
+| **Installer** | `G-Control-Setup-v2.2.1.exe` (~117 MB, no dependencies) |
 | **Build** | VS2022 + Qt 6.8.3 + GStreamer 1.22.12 |
 | **Companion** | Vind-Roz · RPi5 8GB · Ubuntu 24.04 · ROS2 Jazzy · PX4 v1.16.0-rc1 |
 | **Relay** | Vind-Rly · RPi5 · Ubuntu 24.04 · wifibroadcast@gs |
@@ -23,12 +23,12 @@
 - **Camera switch panel** — draggable front/bottom/split-front-bottom/split-bottom-front
 - **Camera Device Advanced** — query full camera detail, set resolution/fps/format via `vision_config_manager`
 - **Settings pages** — Connection (SSH config), PXLABS Settings, Companion Control, Relay Station
-- **Windows installer** — `G-Control-Setup-v2.2.0.exe`, no Python or manual DLL setup needed
+- **Windows installer** — `G-Control-Setup-v2.2.1.exe`, no Python or manual DLL setup needed
 
 ## Quick Start
 
 ### Install (end users)
-Run `G-Control-Setup-v2.2.0.exe` → installs to `C:\Program Files\G-Control\`, creates shortcuts, sets GStreamer env automatically.
+Run `G-Control-Setup-v2.2.1.exe` → installs to `C:\Program Files\G-Control\`, creates shortcuts, sets GStreamer env automatically.
 First launch: Settings → Connection → enter SSH credentials → Apply.
 
 ### Build from source (developers)

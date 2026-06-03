@@ -717,6 +717,7 @@ Never use `__file__` to locate files next to the exe when frozen.
 |---------|------|-----|--------|------------|
 | v2.1.0 | 2026-03-20 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | First stable release — all core features |
 | v2.2.0 | 2026-03-22 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | Resizable panel, WFB stale-green fix, camera-params, installer |
+| v2.2.1 | 2026-06-04 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | Patch — CLI shutdown/reboot hang fix, companion ssh-terminal host key fix, ARCHITECTURE.md |
 
 ---
 

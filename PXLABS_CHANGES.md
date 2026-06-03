@@ -10,12 +10,14 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 
 | Version | Tag | Branch | Date | Status |
 |---------|-----|--------|------|--------|
-| v2.2.0 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | 2026-03-22 | ✅ Stable |
+| v2.2.1 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | 2026-06-04 | ✅ Latest — CLI shutdown/ssh-terminal fixes |
+| v2.2.0 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | 2026-03-22 | Previous stable |
 | v2.1.0 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | 2026-03-20 | Previous stable |
 
-### Installer (v2.2.0)
+### Installer (v2.2.1 — latest)
 
-`G-Control-Setup-v2.2.0.exe` at `installer\G-Control-Setup-v2.2.0.exe` (~117 MB, LZMA compressed).
+`G-Control-Setup-v2.2.1.exe` at `installer\G-Control-Setup-v2.2.1.exe` (~117 MB, LZMA compressed).
+Previous: `G-Control-Setup-v2.2.0.exe` (tag `PXLABS-v2.2.0`).
 
 - Installs to `C:\Program Files\G-Control\`
 - Bundles `pxlabs_cli.exe` — no Python required on target machine
