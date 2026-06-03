@@ -374,6 +374,28 @@ python pxlabs_cli.py config set \
 
 ---
 
+---
+
+## v2.2.1 Patch — 2026-06-04
+
+### ARCHITECTURE.md (NEW)
+
+Full system architecture reference committed to repo root:
+- Mermaid network diagram (renders on GitHub) — PC, Vind-Rly, Vind-Roz nodes
+- Data flow breakdowns: MAVLink, H.264 video, SSH tunnel, relay management
+- WFB-NG stream table (stream IDs, FEC, directions)
+- Software stack tables, network address table, encryption notes
+- README docs table updated to include link
+
+### pxlabs_cli.py — Two bug fixes
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| `companion/relay shutdown` + `reboot` always reported error in G-Control | `recv_exit_status()` blocks; `shutdown now` kills SSH connection before paramiko can read exit status | Replace with `sudo systemd-run --on-active=0 systemctl poweroff/reboot` — detached from SSH session, returns exit 0 immediately |
+| `companion ssh-terminal` fails silently | Port `:2222` presents companion host key (different from relay:22 key); not in Windows known_hosts | Add `-o StrictHostKeyChecking=no` to SSH command — verified correct via `ssh-keyscan` on live hardware |
+
+---
+
 ## SSH / Config Storage
 
 - SSH config JSON: `build_clean/Release/config/ssh_config.json` (auto-created by `config set`)

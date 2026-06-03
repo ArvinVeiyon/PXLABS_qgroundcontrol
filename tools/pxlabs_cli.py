@@ -180,10 +180,14 @@ def companion_actions(args, cfg):
     if action == "ssh-terminal":
         print(f"Opening SSH terminal: ssh -p {port} {username}@{ip}", flush=True)
         if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", f'start cmd /k ssh -p {port} {username}@{ip}'],
+            # StrictHostKeyChecking=no: port 2222 presents the companion host key
+            # which differs from relay:22 and may not be in Windows known_hosts
+            subprocess.Popen(["cmd.exe", "/c",
+                              f'start cmd /k ssh -o StrictHostKeyChecking=no -p {port} {username}@{ip}'],
                              shell=False)
         else:
-            subprocess.Popen(["/bin/sh", "-lc", f"gnome-terminal -- ssh -p {port} {username}@{ip}"])
+            subprocess.Popen(["/bin/sh", "-lc",
+                              f"gnome-terminal -- ssh -o StrictHostKeyChecking=no -p {port} {username}@{ip}"])
         return 0
 
     password = get_password(username, "PXLABS_COMPANION_PASSWORD") or ""
@@ -322,10 +326,14 @@ done'""")
         return 1
 
     if action == "reboot":
-        return run_cmd(*ssh_exec(ip, port, username, password, "sudo reboot"))
+        # systemd-run schedules via transient timer, detached from SSH session
+        # so recv_exit_status() returns before the connection is killed
+        return run_cmd(*ssh_exec(ip, port, username, password,
+                                 "sudo systemd-run --on-active=0 systemctl reboot"))
 
     if action == "shutdown":
-        return run_cmd(*ssh_exec(ip, port, username, password, "sudo shutdown now"))
+        return run_cmd(*ssh_exec(ip, port, username, password,
+                                 "sudo systemd-run --on-active=0 systemctl poweroff"))
 
     print("ERROR: unknown companion action", file=sys.stderr)
     return 1
@@ -356,9 +364,11 @@ def relay_actions(args, cfg):
         return 1
 
     if action == "reboot":
-        return run_cmd(*ssh_exec(ip, port, username, password, "sudo reboot"))
+        return run_cmd(*ssh_exec(ip, port, username, password,
+                                 "sudo systemd-run --on-active=0 systemctl reboot"))
     if action == "shutdown":
-        return run_cmd(*ssh_exec(ip, port, username, password, "sudo shutdown now"))
+        return run_cmd(*ssh_exec(ip, port, username, password,
+                                 "sudo systemd-run --on-active=0 systemctl poweroff"))
 
     if action == "wfb":
         wfb = args.wfb_action

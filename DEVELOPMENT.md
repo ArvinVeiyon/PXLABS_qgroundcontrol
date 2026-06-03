@@ -814,3 +814,107 @@ cd E:\qgc-pxlabs\installer
 # Dev launch
 E:\qgc-pxlabs\Launch-GControl.bat
 ```
+
+---
+
+### Session 4 — 2026-06-04 (Architecture Docs + CLI Bug Fixes)
+
+**Goals:**
+1. Create full system architecture documentation
+2. Verify relay station config against live repo
+3. Fix companion shutdown/reboot and ssh-terminal failures
+
+---
+
+#### 4.1 ARCHITECTURE.md — New File
+
+Created `ARCHITECTURE.md` with:
+
+- **Mermaid diagram** — renders natively on GitHub; shows all 3 nodes (PC, Vind-Rly, Vind-Roz) with network interfaces, services, and all connections
+- **Data flow breakdowns** — MAVLink path, H.264 video downlink, SSH tunnel path, relay management SSH
+- **WFB-NG parameters table** — channel, region, txpower, MCS, bandwidth, STBC, LDPC, temp threshold
+- **WFB-NG stream table** — stream IDs (0x00/0x10/0x90/0xa0/0x20), FEC ratios, directions
+- **Software stack tables** — G-Control.exe layers, companion services, relay services
+- **Network address table** — all nodes, interfaces, IPs, purposes
+- **Encryption section** — drone.key / gs.key symmetric keypair
+
+`README.md` docs table updated to link ARCHITECTURE.md as first entry.
+
+---
+
+#### 4.2 Relay Architecture Corrections
+
+Initial diagram was written from memory. Verified against live `ArvinVeiyon/Relay_Station_Pxlabs` repo. Six corrections applied:
+
+| Item | Was Wrong | Corrected To |
+|------|-----------|--------------|
+| P2P interface name | `wlan0` | `p2p-wlan0-0` |
+| eth0 / CPE610 IPs | `eth0 → CPE610 10.5.7.102` (ambiguous) | relay eth0 = `10.5.7.100`, CPE610 = `10.5.7.102` (separate rows) |
+| WFB service name | `wifibroadcast@gs` | `wifibroadcast-cluster@gs` (instance-based, cluster-capable) |
+| SSH tunnel mechanism | "SSH forward" | `autossh` explicitly — uses `autossh -M 0 -L 0.0.0.0:2222:10.5.5.87:22 roz@10.5.5.87` |
+| Missing service | — | `mediamtx.service` — low-latency RTSP streaming server |
+| Missing service | — | `dhcpd` — serves P2P network 10.5.6.0/24, pool .50–.99, GW 10.5.6.1 |
+
+---
+
+#### 4.3 CLI Bug Fixes — pxlabs_cli.py
+
+**Bug 1: companion/relay shutdown and reboot reported as error**
+
+Root cause: `sudo shutdown now` / `sudo reboot` kill the SSH connection before paramiko's
+`recv_exit_status()` can complete. Paramiko raises an exception → `ssh_exec` returns
+`(False, "", "SSH error: ...", 1)` → G-Control shows failure even though the command ran.
+
+Diagnosis: confirmed on live hardware — paramiko returned SSH error while companion
+successfully executed the command.
+
+Fix: replaced direct `shutdown`/`reboot` with `systemd-run --on-active=0`:
+
+```python
+# Before
+ssh_exec(..., "sudo shutdown now")
+ssh_exec(..., "sudo reboot")
+
+# After
+ssh_exec(..., "sudo systemd-run --on-active=0 systemctl poweroff")
+ssh_exec(..., "sudo systemd-run --on-active=0 systemctl reboot")
+```
+
+`systemd-run` creates a transient timer unit detached from the SSH session.
+The SSH command returns exit 0 immediately; systemd fires the poweroff/reboot
+independently. Verified on both companion and relay before implementing.
+
+Applied to: `companion_actions()` (lines ~329–336) and `relay_actions()` (lines ~368–371).
+
+---
+
+**Bug 2: companion ssh-terminal window opens but SSH connection fails**
+
+Root cause: Port `:2222` on the relay presents the **companion's SSH host key**, not the
+relay's key. This is a different key from `relay:22`. The Windows SSH client either
+prompts for unknown host (may be swallowed silently) or rejects with a host key mismatch
+if the companion was ever reinstalled.
+
+Diagnosis: confirmed with `ssh-keyscan`:
+```
+10.5.6.101:22   → relay ed25519 key:  ...H0gfS7Anyzx1JOzhGxUQg...
+[10.5.6.101]:2222 → companion ed25519: ...K/6/50edQwZT6wctHVTqAWO...
+```
+Keys are different. Relay `ssh-terminal` works because relay:22 key is already trusted.
+
+Fix: added `-o StrictHostKeyChecking=no` to the companion `ssh-terminal` Popen command:
+
+```python
+# Before
+f'start cmd /k ssh -p {port} {username}@{ip}'
+
+# After
+f'start cmd /k ssh -o StrictHostKeyChecking=no -p {port} {username}@{ip}'
+```
+
+Acceptable on a private drone LAN — the companion is a known trusted device.
+Applied to both Windows (`cmd.exe Popen`) and Linux (`gnome-terminal`) paths.
+
+---
+
+**pxlabs_cli.exe rebuilt** after fixes via PyInstaller spec (no new warnings).
