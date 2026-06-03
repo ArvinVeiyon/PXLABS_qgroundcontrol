@@ -10,7 +10,7 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 
 | Version | Tag | Branch | Date | Status |
 |---------|-----|--------|------|--------|
-| v2.2.1 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | 2026-06-04 | ✅ Latest — CLI shutdown/ssh-terminal fixes, NSIS 3.11 compat |
+| v2.2.1 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | 2026-06-04 | ✅ Latest — CLI shutdown/ssh-terminal fixes, NSIS 3.11 compat, FlyView panel responsiveness |
 | v2.2.0 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | 2026-03-22 | Previous stable |
 | v2.1.0 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | 2026-03-20 | Previous stable |
 
@@ -401,6 +401,13 @@ Full system architecture reference committed to repo root:
 | Bug | Root Cause | Fix |
 |-----|-----------|-----|
 | `Error: command SetRegView not valid outside Section or Function` | NSIS 3.11 no longer allows `SetRegView` at global scope | Moved `SetRegView 64` into both `Section "G-Control"` and `Section "Uninstall"` |
+
+### FlyViewCustomLayer.qml — FlyView panel responsiveness fixes
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| SSH terminal button requires 3–4 presses in FlyView panel | `_runPanelCmd` silently dropped button press when runner was busy with background polls (wifi-temp/status) — no abort, no retry, no feedback | Mirrored `CompanionControl` abort-and-retry: detect `pxlabs_bg_active`, abort poll, retry via `_panelRetryTimer` (400 ms) |
+| Status area shows "Opening SSH terminal…" forever after terminal opens | `onCommandFinished` only updated `_panelStatus` on failure — success left last CLI output text permanently | On success: set "✓ Terminal opened" for ssh-terminal; auto-clear all success status after 2.5 s via `_panelStatusClearTimer` |
 
 ---
 

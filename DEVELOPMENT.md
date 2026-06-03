@@ -717,7 +717,7 @@ Never use `__file__` to locate files next to the exe when frozen.
 |---------|------|-----|--------|------------|
 | v2.1.0 | 2026-03-20 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | First stable release — all core features |
 | v2.2.0 | 2026-03-22 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | Resizable panel, WFB stale-green fix, camera-params, installer |
-| v2.2.1 | 2026-06-04 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | Patch — CLI shutdown/reboot hang fix, companion ssh-terminal host key fix, ARCHITECTURE.md, NSIS 3.11 compat |
+| v2.2.1 | 2026-06-04 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | Patch — CLI shutdown/reboot hang fix, ssh-terminal host key fix, ARCHITECTURE.md, NSIS 3.11 compat, FlyView panel abort-and-retry + status clear |
 
 ---
 
@@ -936,3 +936,70 @@ Error: command SetRegView not valid outside Section or Function (line 22)
 Fix: removed `SetRegView 64` from global scope, added it as the first line inside both
 `Section "G-Control (required)"` (install) and `Section "Uninstall"` — so all registry
 writes in both directions use the 64-bit hive correctly.
+
+---
+
+**Bug 4: FlyView SSH terminal button requires 3–4 presses**
+
+Root cause: `_runPanelCmd` in `FlyViewCustomLayer.qml` silently returns when
+`PXLABSRunner.running` is true — no feedback, no retry. The toolbar background polls
+(`companion wifi-temp`, `status`) run on the same singleton runner and take 3–5 s. During
+that window every button press is silently dropped.
+
+Diagnosis: `CompanionControl.qml` (Settings page) already has the fix — it checks the
+`pxlabs_bg_active` flag, aborts the background poll, and retries the user command via a
+400 ms `bgRetryTimer`. `FlyViewCustomLayer._runPanelCmd` had none of this.
+
+Fix: mirrored the abort-and-retry pattern into `_runPanelCmd`:
+
+```qml
+// Before
+function _runPanelCmd(args, statusMsg) {
+    if (PXLABSRunner.running) return   // silent drop
+    ...
+}
+
+// After
+function _runPanelCmd(args, statusMsg) {
+    if (PXLABSRunner.running) {
+        if (QGroundControl.loadGlobalSetting("pxlabs_bg_active", "0") === "1") {
+            _panelRetryArgs   = args
+            _panelRetryStatus = statusMsg
+            _panelStatus      = "Waiting…"
+            PXLABSRunner.abort()
+            _panelRetryTimer.start()   // 400 ms, then re-runs command
+        } else {
+            _panelStatus = "⚠ Busy — retry in a moment"
+        }
+        return
+    }
+    ...
+}
+```
+
+Added `_panelRetryTimer` (400 ms, same as CompanionControl `bgRetryTimer`) and two new
+properties: `_panelRetryArgs`, `_panelRetryStatus`.
+
+---
+
+**Bug 5: Status area shows "Opening SSH terminal…" indefinitely after terminal opens**
+
+Root cause: `onCommandFinished` only updated `_panelStatus` on failure. On success
+(exit 0), `_panelStatus` retained the last `outputReady` text — for ssh-terminal that
+was "Opening SSH terminal: ssh -p 2222 roz@10.5.6.101" — which stayed visible forever.
+
+Fix: on `commandFinished(exitCode === 0)`:
+- If command was `ssh-terminal` → set `_panelStatus = "✓ Terminal opened"`
+- Start `_panelStatusClearTimer` (2.5 s) to blank the status for all successful commands
+
+```qml
+if (exitCode !== 0) {
+    _panelStatus = "✗ Failed (exit " + exitCode + ")"
+} else {
+    if (_root._lastPanelCmd.indexOf("ssh-terminal") >= 0)
+        _panelStatus = "✓ Terminal opened"
+    _panelStatusClearTimer.restart()   // clears after 2.5 s
+}
+```
+
+`_lastPanelCmd` property added to track which command is currently running.
