@@ -10,7 +10,7 @@ REM  paths (Qt/VS generator requirement).
 REM ============================================================
 
 echo ============================================================
-echo   PXLABS G-Control Build  ^|  Branch: PXLABS-v2.1-integration
+echo   PXLABS G-Control Build  ^|  Branch: PXLABS-integration
 echo ============================================================
 
 REM --- VS 2022 Developer Environment ---

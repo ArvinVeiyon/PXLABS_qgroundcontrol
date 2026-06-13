@@ -10,14 +10,15 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 
 | Version | Tag | Branch | Date | Status |
 |---------|-----|--------|------|--------|
-| v2.2.1 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | 2026-06-04 | ✅ Latest — CLI shutdown/ssh-terminal fixes, NSIS 3.11 compat, FlyView panel responsiveness |
+| v3.0.0 | `PXLABS-v3.0.0` | `release/PXLABS-v3.0` | 2026-06-14 | ✅ Latest — relay services panel fix (per-target lists + bash parsing fix), FlyView shutdown/reboot acknowledgement, camera resolution/FPS/format dropdowns |
+| v2.2.1 | `PXLABS-v2.2.1` | `PXLABS-integration` | 2026-06-04 | Previous stable — CLI shutdown/ssh-terminal fixes, NSIS 3.11 compat, FlyView panel responsiveness |
 | v2.2.0 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | 2026-03-22 | Previous stable |
 | v2.1.0 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | 2026-03-20 | Previous stable |
 
-### Installer (v2.2.1 — latest)
+### Installer (v3.0.0 — latest)
 
-`G-Control-Setup-v2.2.1.exe` at `installer\G-Control-Setup-v2.2.1.exe` (~117 MB, LZMA compressed).
-Previous: `G-Control-Setup-v2.2.0.exe` (tag `PXLABS-v2.2.0`).
+`G-Control-Setup-v3.0.0.exe` at `installer\G-Control-Setup-v3.0.0.exe` (~117 MB, LZMA compressed).
+Previous: `G-Control-Setup-v2.2.1.exe` (tag `PXLABS-v2.2.1`), `G-Control-Setup-v2.2.0.exe` (tag `PXLABS-v2.2.0`).
 
 - Installs to `C:\Program Files\G-Control\`
 - Bundles `pxlabs_cli.exe` — no Python required on target machine
@@ -27,7 +28,7 @@ Previous: `G-Control-Setup-v2.2.0.exe` (tag `PXLABS-v2.2.0`).
 - Config (`config\ssh_config.json`) not overwritten on reinstall — SSH credentials preserved
 - Uninstall keeps `config\` folder
 
-**Development branch:** `PXLABS-v2.1-integration`
+**Development branch:** `PXLABS-integration`
 **GitHub:** `https://github.com/ArvinVeiyon/PXLABS_qgroundcontrol`
 
 ---
@@ -408,6 +409,38 @@ Full system architecture reference committed to repo root:
 |-----|-----------|-----|
 | SSH terminal button requires 3–4 presses in FlyView panel | `_runPanelCmd` silently dropped button press when runner was busy with background polls (wifi-temp/status) — no abort, no retry, no feedback | Mirrored `CompanionControl` abort-and-retry: detect `pxlabs_bg_active`, abort poll, retry via `_panelRetryTimer` (400 ms) |
 | Status area shows "Opening SSH terminal…" forever after terminal opens | `onCommandFinished` only updated `_panelStatus` on failure — success left last CLI output text permanently | On success: set "✓ Terminal opened" for ssh-terminal; auto-clear all success status after 2.5 s via `_panelStatusClearTimer` |
+
+---
+
+## v3.0.0 — 2026-06-14
+
+### pxlabs_cli.py — services_actions() per-target service lists + bash parsing fix
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| Relay services panel shows every service as "unknown" | Single hardcoded `important_services` list (companion services) used for both `--target companion` and `--target relay` | Split into `COMPANION_SERVICES` / `RELAY_SERVICES`, selected by `--target` |
+| `mediamtx` missing from relay services panel | Not in any service list | Added `mediamtx.service` to `RELAY_SERVICES` |
+| Refresh output had spurious extra lines | `$(systemctl is-active "$s" 2>/dev/null \|\| echo unknown)` — `is-active`/`is-enabled` print a status word AND exit non-zero (e.g. `failed`, `inactive`), so the `\|\|` fallback still ran | Rewrote as `a=$(systemctl is-active "$s" 2>/dev/null); a=${a:-unknown}` |
+
+Verified live: `services refresh --target relay` → 20 clean lines, `--target companion` → 19 clean lines.
+
+### FlyViewCustomLayer.qml — shutdown/reboot acknowledgement
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| Companion/Relay Restart/Shutdown gave no feedback — user had to keep pressing the button | `_confirm(title, msg, cmd)` called `PXLABSRunner.run(cmd)` directly, bypassing `_runPanelCmd`/`_panelStatus` | `_confirm` now takes a `statusMsg` arg and routes through `_runPanelCmd`; `onCommandFinished` shows "✓ Shutdown command sent" / "✓ Reboot command sent" |
+
+Verified live on hardware — "worked perfectly". Camera switch quick-buttons (front/bottom/split) still call `PXLABSRunner.run()` directly and bypass abort-and-retry — open issue (see DEVELOPMENT.md §9 Bug A).
+
+### CompanionControl.qml — camera resolution/FPS/format dropdowns
+
+Previously: free-text Resolution/FPS fields + hardcoded MJPG/UYVY Format dropdown, required
+manually copying values from "Query Details" output.
+
+Added `_parseCameraQuery()` / `_applyCameraQuery()` — parses `vision_config_manager
+list-details` into a format → resolution → fps map plus the camera's current values, and
+populates three cascading `QGCComboBox`es (Format, Resolution, FPS) pre-selected to the
+active values. Works for any device in the Device dropdown.
 
 ---
 

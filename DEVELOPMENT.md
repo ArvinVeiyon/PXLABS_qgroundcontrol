@@ -21,7 +21,7 @@ All PXLABS code lives in new files, with two minimal additive hooks into native 
 | | |
 |---|---|
 | Base | QGroundControl v5.0.8 (tag `qgc-v5.0.8-base`) |
-| Dev branch | `PXLABS-v2.1-integration` |
+| Dev branch | `PXLABS-integration` |
 | GitHub | `https://github.com/ArvinVeiyon/PXLABS_qgroundcontrol` |
 | Build output | `E:\qgc-pxlabs\build_clean\Release\G-Control.exe` |
 | Installer | `installer\G-Control-Setup-v<version>.exe` |
@@ -717,8 +717,8 @@ Never use `__file__` to locate files next to the exe when frozen.
 |---------|------|-----|--------|------------|
 | v2.1.0 | 2026-03-20 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | First stable release — all core features |
 | v2.2.0 | 2026-03-22 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | Resizable panel, WFB stale-green fix, camera-params, installer |
-| v2.2.1 | 2026-06-04 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | Patch — CLI shutdown/reboot hang fix, ssh-terminal host key fix, ARCHITECTURE.md, NSIS 3.11 compat, FlyView panel abort-and-retry + status clear |
-| v3.0.0 | 2026-06-14 | `PXLABS-v3.0.0` | `PXLABS-v2.1-integration` | Stable release — relay services panel fixed (per-target service lists + bash parsing fix), FlyView shutdown/reboot acknowledgement, camera resolution/FPS/format auto-populated dropdowns |
+| v2.2.1 | 2026-06-04 | `PXLABS-v2.2.1` | `PXLABS-integration` | Patch — CLI shutdown/reboot hang fix, ssh-terminal host key fix, ARCHITECTURE.md, NSIS 3.11 compat, FlyView panel abort-and-retry + status clear |
+| v3.0.0 | 2026-06-14 | `PXLABS-v3.0.0` | `PXLABS-integration` | Stable release — relay services panel fixed (per-target service lists + bash parsing fix), FlyView shutdown/reboot acknowledgement, camera resolution/FPS/format auto-populated dropdowns |
 
 ---
 
