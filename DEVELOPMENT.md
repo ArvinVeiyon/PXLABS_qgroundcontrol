@@ -718,6 +718,7 @@ Never use `__file__` to locate files next to the exe when frozen.
 | v2.1.0 | 2026-03-20 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | First stable release — all core features |
 | v2.2.0 | 2026-03-22 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | Resizable panel, WFB stale-green fix, camera-params, installer |
 | v2.2.1 | 2026-06-04 | `PXLABS-v2.2.1` | `PXLABS-v2.1-integration` | Patch — CLI shutdown/reboot hang fix, ssh-terminal host key fix, ARCHITECTURE.md, NSIS 3.11 compat, FlyView panel abort-and-retry + status clear |
+| v3.0.0 | 2026-06-14 | `PXLABS-v3.0.0` | `PXLABS-v2.1-integration` | Stable release — relay services panel fixed (per-target service lists + bash parsing fix), FlyView shutdown/reboot acknowledgement, camera resolution/FPS/format auto-populated dropdowns |
 
 ---
 
@@ -1006,38 +1007,166 @@ if (exitCode !== 0) {
 
 ---
 
+### Session 5 — 2026-06-14 (Relay Services, Shutdown Ack, Camera Dropdowns)
+
+**Goals:**
+1. Fix relay services panel showing every service as "unknown" (Bug B / Bug D)
+2. Fix System Control panel shutdown/reboot buttons giving no acknowledgement (Bug A — power actions)
+3. Replace manual camera resolution/FPS/format copy-paste with auto-populated dropdowns
+
+---
+
+#### 5.1 Relay Services Panel — Wrong Service List + Bash Parsing Bug (Bug B, Bug D)
+
+**File:** `tools/pxlabs_cli.py` — `services_actions()`
+
+Root cause was two-fold:
+
+1. `services_actions()` used a single hardcoded `important_services` list (companion services
+   only) regardless of `--target`. For `--target relay`, `systemctl is-active` was queried
+   against service names that don't exist on the relay → "unknown" for everything.
+2. The refresh command used the `$(cmd || echo unknown)` pattern. `systemctl is-active` /
+   `is-enabled` print a status word (e.g. `failed`, `inactive`) AND exit non-zero — so the
+   `||` fallback still ran, appending a spurious extra `unknown` line per service and
+   desyncing the parsed output from the service list.
+
+Fix: added two module-level lists, `COMPANION_SERVICES` and `RELAY_SERVICES`; `services_actions()`
+now picks `default_services = RELAY_SERVICES if target == "relay" else COMPANION_SERVICES`.
+Rewrote the refresh command to avoid `||`:
+
+```bash
+a=$(systemctl is-active "$s" 2>/dev/null); a=${a:-unknown}
+e=$(systemctl is-enabled "$s" 2>/dev/null); e=${e:-unknown}
+echo "$s|$a|$e"
+```
+
+`RELAY_SERVICES` includes `mediamtx.service` (closes Bug D), plus `isc-dhcp-server.service`,
+`isc-dhcp-server6.service`, `ssh-tunnel-to-companion.service`, `wfb-cluster.service`,
+`wifibroadcast.service`, `wifibroadcast@gs.service`, `relay_files_sync.timer`, and the
+shared system services — verified against the live relay's actual unit list.
+
+**Verified live:** `services refresh --target relay` (10.5.6.101:22) → 20 clean lines
+(e.g. `isc-dhcp-server6.service|failed|enabled`); `--target companion` → 19 clean lines.
+Both correct, no spurious lines.
+
+---
+
+#### 5.2 FlyView Shutdown/Reboot Acknowledgement (Bug A — power actions)
+
+**File:** `src/FlightDisplay/FlyViewCustomLayer.qml`
+
+**Symptom:** Pressing Companion/Relay Shutdown or Restart in the System Control panel gave
+no feedback — user couldn't tell if the command was received, and kept pressing the button
+until the device actually shut down.
+
+Root cause: `_confirm(title, msg, cmd)` called `PXLABSRunner.run(cmd)` directly from the
+Yes-dialog callback, bypassing `_runPanelCmd` entirely — no busy state, no `_panelStatus`
+text, no abort-and-retry against background polls.
+
+Fix: `_confirm` now takes a 4th `statusMsg` argument and routes through `_runPanelCmd`:
+
+```qml
+function _confirm(title, msg, cmd, statusMsg) {
+    mainWindow.showMessageDialog(title, msg, Dialog.Yes | Dialog.No,
+                                 function() { _runPanelCmd(cmd, statusMsg) })
+}
+```
+
+All 4 call sites (Companion/Relay Restart/Shutdown) updated with status messages
+(`"Restarting companion…"`, `"Shutting down companion…"`, etc.). Extended the
+`onCommandFinished` success branch so exit-0 sets `_panelStatus` to
+`"✓ Shutdown command sent"` / `"✓ Reboot command sent"` / `"✓ Terminal opened"`
+depending on `_lastPanelCmd`, then restarts `_panelStatusClearTimer`.
+
+**Verified live by user on hardware — "worked perfectly".**
+
+**Remaining scope (Bug A not fully closed):** the camera switch quick-buttons in the
+FlyView panel (`PXLABSRunner.run("companion front-switch")` etc., ~lines 810/818/830/838)
+still call the runner directly and have the same silent-drop gap. See updated Bug A note
+in §9.
+
+---
+
+#### 5.3 Camera Resolution/FPS/Format Dropdowns
+
+**File:** `src/UI/AppSettings/CompanionControl.qml`
+
+Previously the "Camera Device (Advanced)" section had free-text Resolution/FPS fields and
+a hardcoded MJPG/UYVY Format dropdown — the user had to run "Query Details", read the
+`vision_config_manager list-details` output, and manually copy the pixel size/fps/format
+into the fields before pressing Apply.
+
+Added `_parseCameraQuery(text)`, which parses the `list-details` output into:
+
+- a map of `{ format: { order: [resolutions...], fps: { resolution: [fps...] } } }` from
+  the "Supported Formats" section (`[N]: 'FORMAT'`, `Size: Discrete WxH`,
+  `Interval: Discrete ... (X fps)`)
+- the camera's currently-active format/resolution/fps (`Pixel Format`, `Width/Height`,
+  `Frames per second` lines)
+
+`_applyCameraQuery(text)` uses this to populate three cascading `QGCComboBox`es
+(Format → Resolution → FPS, each computed via `readonly property var` so changing the
+format updates the resolution list, and changing the resolution updates the fps list),
+pre-selecting the camera's current values. `Qt.callLater()` sequences the index updates
+across the dependent comboboxes after each model change.
+
+"Query Details" sets `_camQueryActive = true`; `onCommandFinished` calls
+`_applyCameraQuery(_camLastOutput)` on success. "Apply" sends
+`companion camera-params --device <dev> --resolution <res> --fps <fps> --format <fmt>`.
+Works for any device selected in the Device dropdown (`/dev/video0`, `/dev/video2`,
+`/dev/video3`) — re-querying repopulates the dropdowns for that device.
+
+Removed the old free-text Resolution/FPS `QGCTextField`s.
+
+---
+
+**Released:** v3.0.0
+
+---
+
 ## 9. Known Issues / Pending Improvements
 
-Identified at end of Session 4 (2026-06-04). Not yet fixed. Priority: High → Low.
+Identified at end of Session 4 (2026-06-04). Bugs B and D resolved, Bug A partially
+resolved, in Session 5 (2026-06-14) — see status notes below. Bug C remains open.
+Priority: High → Low.
 
 ---
 
 ### Bug A (High) — FlyView `_confirm` and camera buttons bypass abort-and-retry
 
+**Status: PARTIALLY RESOLVED (Session 5, 2026-06-14).** The System Control panel's
+Companion/Relay Restart/Shutdown buttons now route through `_confirm` → `_runPanelCmd`
+and give proper `_panelStatus` feedback ("✓ Shutdown command sent" etc.) — this was the
+user-reported issue (shutdown gave no acknowledgement) and is verified fixed on live
+hardware. The camera switch quick-buttons below (~810/818/830/838) still call
+`PXLABSRunner.run(args)` directly and remain unfixed — see remaining scope below.
+
 **File:** `src/FlightDisplay/FlyViewCustomLayer.qml`
 
-**Lines affected:** ~428, ~442, ~479, ~493 (WFB mode `_confirm` handler), ~806, ~814, ~826, ~834 (camera switch buttons)
+**Lines affected (remaining):** ~810, ~818, ~830, ~838 (camera switch buttons —
+front-switch, bottom-switch, split-front-bottom, split-bottom-front)
 
-**Symptom:** Clicking WFB mode confirm or any camera switch button while a background poll is running silently drops the command — no feedback, no retry.
+**Symptom:** Clicking a camera switch button while a background poll is running silently drops the command — no feedback, no retry.
 
-**Root cause:** These buttons call `PXLABSRunner.run(args)` directly without going through `_runPanelCmd`. The abort-and-retry logic added in Session 4 only covers `_runPanelCmd`. Direct callers bypass it entirely.
+**Root cause:** These buttons call `PXLABSRunner.run(args)` directly without going through `_runPanelCmd`. The abort-and-retry logic only covers `_runPanelCmd`. Direct callers bypass it entirely.
 
-**Fix needed:** Route all `PXLABSRunner.run(args)` calls in `FlyViewCustomLayer.qml` through `_runPanelCmd(args, statusMsg)`, or extract the abort-and-retry guard into a shared helper that these call sites also invoke.
+**Fix needed:** Route the remaining `PXLABSRunner.run(args)` calls (camera switch buttons) through `_runPanelCmd(args, statusMsg)`.
 
 ---
 
 ### Bug B (High) — Relay services panel shows all "unknown" status
+
+**Status: RESOLVED (Session 5, 2026-06-14).** `services_actions()` now selects
+`COMPANION_SERVICES` or `RELAY_SERVICES` based on `--target`, and the refresh command no
+longer uses the `$(cmd || echo unknown)` pattern that produced spurious extra lines.
+Verified live: `--target relay` → 20 clean lines, `--target companion` → 19 clean lines.
+See §6 Session 5.1.
 
 **File:** `tools/pxlabs_cli.py` — `services_actions()` function
 
 **Symptom:** Opening the Relay Station settings page → Services tab shows every service as "unknown" or missing.
 
 **Root cause:** `services_actions()` uses a single hardcoded service list (`wifibroadcast@drone`, `mavlink.router`, `microxrce-agent`, `vision_streaming`, etc.) regardless of whether `--target companion` or `--target relay` is passed. The relay does not run companion services, so `systemctl is-active` returns "unknown" for all of them.
-
-**Fix needed:** Branch the service list on `--target`:
-
-- `--target companion`: current list (unchanged)
-- `--target relay`: `wifibroadcast-cluster@gs.service`, `mavlink.router.service`, `ssh-tunnel-to-companion.service`, `mediamtx.service`, `dhcpd.service`, `relay_files_sync.timer`, `ssh.service`
 
 ---
 
@@ -1053,6 +1182,7 @@ Identified at end of Session 4 (2026-06-04). Not yet fixed. Priority: High → L
 
 ### Bug D (Low) — `mediamtx` not in relay services panel
 
-**Symptom:** `mediamtx` runs on the relay (RTSP re-streamer for camera feeds) and is documented in ARCHITECTURE.md, but it does not appear in the relay services panel in G-Control.
+**Status: RESOLVED (Session 5, 2026-06-14).** `mediamtx.service` is now included in
+`RELAY_SERVICES` (added as part of Bug B's fix). See §6 Session 5.1.
 
-**Fix needed:** Once Bug B is fixed (relay service list corrected), simply add `mediamtx.service` to the relay service list in `services_actions()`. No QML changes required.
+**Symptom:** `mediamtx` runs on the relay (RTSP re-streamer for camera feeds) and is documented in ARCHITECTURE.md, but it does not appear in the relay services panel in G-Control.
