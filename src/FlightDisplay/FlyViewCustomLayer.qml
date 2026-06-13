@@ -174,9 +174,9 @@ Item {
     // -----------------------------------------------------------------------
     // Other helpers
     // -----------------------------------------------------------------------
-    function _confirm(title, msg, cmd) {
+    function _confirm(title, msg, cmd, statusMsg) {
         mainWindow.showMessageDialog(title, msg, Dialog.Yes | Dialog.No,
-                                     function() { PXLABSRunner.run(cmd) })
+                                     function() { _runPanelCmd(cmd, statusMsg) })
     }
 
     function _runPanelCmd(args, statusMsg) {
@@ -247,6 +247,10 @@ Item {
                 } else {
                     if (_root._lastPanelCmd.indexOf("ssh-terminal") >= 0)
                         _panelStatus = "✓ Terminal opened"
+                    else if (_root._lastPanelCmd.indexOf("shutdown") >= 0)
+                        _panelStatus = "✓ Shutdown command sent"
+                    else if (_root._lastPanelCmd.indexOf("reboot") >= 0)
+                        _panelStatus = "✓ Reboot command sent"
                     _panelStatusClearTimer.restart()
                 }
             }
@@ -425,7 +429,7 @@ Item {
                             QGCLabel { text: "↺"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize+1; font.bold: true }
                             QGCLabel { text: "Restart Companion"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true } }
                         MouseArea { id: cmpRstMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: _confirm("Companion Restart","Reboot companion now?","companion reboot") }
+                            onClicked: _confirm("Companion Restart","Reboot companion now?","companion reboot","Restarting companion…") }
                     }
 
                     // Shutdown Companion
@@ -439,7 +443,7 @@ Item {
                             QGCLabel { text: "⏻"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize+1; font.bold: true }
                             QGCLabel { text: "Shutdown Companion"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true } }
                         MouseArea { id: cmpShtMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: _confirm("Companion Shutdown","Shutdown companion now?","companion shutdown") }
+                            onClicked: _confirm("Companion Shutdown","Shutdown companion now?","companion shutdown","Shutting down companion…") }
                     }
 
                     // SSH Companion
@@ -476,7 +480,7 @@ Item {
                             QGCLabel { text: "↺"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize+1; font.bold: true }
                             QGCLabel { text: "Restart Relay"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true } }
                         MouseArea { id: relRstMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: _confirm("Relay Restart","Reboot relay station now?","relay reboot") }
+                            onClicked: _confirm("Relay Restart","Reboot relay station now?","relay reboot","Restarting relay…") }
                     }
 
                     // Shutdown Relay
@@ -490,7 +494,7 @@ Item {
                             QGCLabel { text: "⏻"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize+1; font.bold: true }
                             QGCLabel { text: "Shutdown Relay"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true } }
                         MouseArea { id: relShtMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: _confirm("Relay Shutdown","Shutdown relay station now?","relay shutdown") }
+                            onClicked: _confirm("Relay Shutdown","Shutdown relay station now?","relay shutdown","Shutting down relay…") }
                     }
 
                     // SSH Relay

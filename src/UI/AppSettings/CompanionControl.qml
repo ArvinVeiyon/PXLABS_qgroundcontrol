@@ -42,6 +42,26 @@ SettingsPage {
         "system_files_sync.timer"
     ]
 
+    // Camera resolution/fps/format — dynamic lists populated by camera-query
+    property bool   _camQueryActive: false
+    property string _camLastOutput:  ""
+    property var    _camFmtMap:      ({})   // format -> { order: [resolutions], fps: {resolution: [fps]} }
+    property var    _camFormatList:  ["MJPG", "UYVY"]
+    property string _camDetectedFmt: ""
+    property string _camDetectedRes: ""
+    property string _camDetectedFps: ""
+
+    readonly property var _camResOptions: {
+        var fmt = _camFmtMap[fmtCombo.currentText]
+        return (fmt && fmt.order.length > 0) ? fmt.order
+                                              : ["1920x1080", "1280x720", "960x540", "640x480", "320x240"]
+    }
+    readonly property var _camFpsOptions: {
+        var fmt = _camFmtMap[fmtCombo.currentText]
+        var fps = fmt ? fmt.fps[resCombo.currentText] : null
+        return (fps && fps.length > 0) ? fps : ["60", "30", "15", "10", "5"]
+    }
+
     function _run(args) {
         if (PXLABSRunner.running) {
             if (QGroundControl.loadGlobalSetting("pxlabs_bg_active", "0") === "1") {
@@ -64,12 +84,84 @@ SettingsPage {
         return t.length > 0 ? t : svcCombo.currentText
     }
 
+    // Parse `vision_config_manager list-details` output into a format/resolution/fps map
+    // plus the camera's currently-active format/resolution/fps.
+    function _parseCameraQuery(text) {
+        var curFmtMatch = text.match(/Pixel Format\s*:\s*'(\w+)'/)
+        var curResMatch = text.match(/Width\/Height\s*:\s*(\d+)\/(\d+)/)
+        var curFpsMatch = text.match(/Frames per second:\s*([\d.]+)/)
+
+        var lines = text.split('\n')
+        var map = {}
+        var curFmt = null, curRes = null, inFormats = false
+
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i]
+            if (!inFormats) {
+                if (line.indexOf("Supported Formats") >= 0) inFormats = true
+                continue
+            }
+            var fm = line.match(/^\s*\[\d+\]:\s*'(\w+)'/)
+            if (fm) {
+                curFmt = fm[1]
+                if (!map[curFmt]) map[curFmt] = { order: [], fps: {} }
+                curRes = null
+                continue
+            }
+            var sm = line.match(/Size:\s*Discrete\s*(\d+x\d+)/)
+            if (sm && curFmt) {
+                curRes = sm[1]
+                if (map[curFmt].order.indexOf(curRes) < 0) map[curFmt].order.push(curRes)
+                if (!map[curFmt].fps[curRes]) map[curFmt].fps[curRes] = []
+                continue
+            }
+            var fpm = line.match(/\(([\d.]+)\s*fps\)/)
+            if (fpm && curFmt && curRes) {
+                var v = parseFloat(fpm[1]).toString()
+                if (map[curFmt].fps[curRes].indexOf(v) < 0) map[curFmt].fps[curRes].push(v)
+            }
+        }
+
+        return {
+            map:    map,
+            curFmt: curFmtMatch ? curFmtMatch[1] : "",
+            curRes: curResMatch ? (curResMatch[1] + "x" + curResMatch[2]) : "",
+            curFps: curFpsMatch ? parseFloat(curFpsMatch[1]).toString() : ""
+        }
+    }
+
+    // Populate the Resolution/FPS/Format dropdowns from a camera-query result,
+    // pre-selecting the camera's currently-active values.
+    function _applyCameraQuery(text) {
+        var parsed = _parseCameraQuery(text)
+        var fmts = Object.keys(parsed.map)
+        _camFmtMap      = parsed.map
+        _camFormatList  = fmts.length > 0 ? fmts : ["MJPG", "UYVY"]
+        _camDetectedFmt = parsed.curFmt
+        _camDetectedRes = parsed.curRes
+        _camDetectedFps = parsed.curFps
+
+        var fi = _camFormatList.indexOf(_camDetectedFmt)
+        fmtCombo.currentIndex = fi >= 0 ? fi : 0
+
+        Qt.callLater(function() {
+            var ri = _camResOptions.indexOf(_camDetectedRes)
+            resCombo.currentIndex = ri >= 0 ? ri : 0
+
+            Qt.callLater(function() {
+                var fpi = _camFpsOptions.indexOf(_camDetectedFps)
+                fpsCombo.currentIndex = fpi >= 0 ? fpi : 0
+            })
+        })
+    }
+
     Connections {
         target: PXLABSRunner
         function onOutputReady(text) {
             if (!_busy) return
             outputArea.text = text
             if (_svcRefreshActive) _svcLastOutput = text
+            if (_camQueryActive)   _camLastOutput = text
         }
         function onCommandFinished(exitCode) {
             if (!_busy) return
@@ -84,12 +176,17 @@ SettingsPage {
                 }
                 if (names.length > 0) _svcNames = names
             }
+            if (_camQueryActive) {
+                _camQueryActive = false
+                if (exitCode === 0) _applyCameraQuery(_camLastOutput)
+            }
             if (exitCode !== 0) outputArea.text += qsTr("\n[Exit code: %1]").arg(exitCode)
         }
         function onCommandFailed(errorText) {
             if (!_busy) return
             _busy = false
             _svcRefreshActive = false
+            _camQueryActive   = false
             outputArea.text = qsTr("ERROR: ") + errorText
         }
     }
@@ -161,7 +258,13 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Query Details")
                 enabled:   !_busy
-                onClicked: _run("companion camera-query --device " + deviceCombo.currentText)
+                onClicked: { _camQueryActive = true; _run("companion camera-query --device " + deviceCombo.currentText) }
+            }
+
+            QGCLabel {
+                text:           qsTr("(Query Details to populate Resolution/FPS/Format)")
+                color:          QGroundControl.globalPalette.colorGrey
+                font.pointSize: ScreenTools.smallFontPointSize
             }
         }
 
@@ -170,32 +273,30 @@ SettingsPage {
             Layout.fillWidth: true
             spacing: ScreenTools.defaultFontPixelWidth
 
-            QGCLabel { text: qsTr("Resolution:") }
-            QGCTextField {
-                id:            resField
-                text:          "1920x1080"
-                implicitWidth: ScreenTools.defaultFontPixelWidth * 12
-            }
-
-            QGCLabel { text: qsTr("FPS:") }
-            QGCTextField {
-                id:            fpsField
-                text:          "60"
-                implicitWidth: ScreenTools.defaultFontPixelWidth * 6
-            }
-
             QGCLabel { text: qsTr("Format:") }
             QGCComboBox {
                 id:    fmtCombo
-                model: ["MJPG", "UYVY"]
+                model: _camFormatList
+            }
+
+            QGCLabel { text: qsTr("Resolution:") }
+            QGCComboBox {
+                id:    resCombo
+                model: _camResOptions
+            }
+
+            QGCLabel { text: qsTr("FPS:") }
+            QGCComboBox {
+                id:    fpsCombo
+                model: _camFpsOptions
             }
 
             QGCButton {
                 text:      qsTr("Apply")
                 enabled:   !_busy
                 onClicked: _run("companion camera-params --device " + deviceCombo.currentText
-                                + " --resolution " + resField.text.trim()
-                                + " --fps "        + fpsField.text.trim()
+                                + " --resolution " + resCombo.currentText
+                                + " --fps "        + fpsCombo.currentText
                                 + " --format "     + fmtCombo.currentText)
             }
         }

@@ -430,29 +430,56 @@ fi
 # ---------------------------------------------------------------------------
 # services subcommand
 # ---------------------------------------------------------------------------
+COMPANION_SERVICES = [
+    "avahi-daemon.service",
+    "cron.service",
+    "dbus.service",
+    "mavlink.router.service",
+    "microxrce-agent.service",
+    "polkit.service",
+    "rc_control_node.service",
+    "ros2_external_node_reg.service",
+    "ros2_px4_translation_node.service",
+    "rsyslog.service",
+    "ssh.service",
+    "systemd-journald.service",
+    "systemd-logind.service",
+    "systemd-resolved.service",
+    "systemd-timesyncd.service",
+    "systemd-udevd.service",
+    "tfmini.service",
+    "vision_streaming.service",
+    "wifibroadcast@drone.service",
+]
+
+RELAY_SERVICES = [
+    "avahi-daemon.service",
+    "cron.service",
+    "dbus.service",
+    "isc-dhcp-server.service",
+    "isc-dhcp-server6.service",
+    "mavlink.router.service",
+    "mediamtx.service",
+    "polkit.service",
+    "relay_files_sync.timer",
+    "rsyslog.service",
+    "ssh.service",
+    "ssh-tunnel-to-companion.service",
+    "systemd-journald.service",
+    "systemd-logind.service",
+    "systemd-resolved.service",
+    "systemd-timesyncd.service",
+    "systemd-udevd.service",
+    "wfb-cluster.service",
+    "wifibroadcast.service",
+    "wifibroadcast@gs.service",
+]
+
+
 def services_actions(args, cfg):
     target = args.target
-    services = cfg.get("important_services") or [
-        "avahi-daemon.service",
-        "cron.service",
-        "dbus.service",
-        "mavlink.router.service",
-        "microxrce-agent.service",
-        "polkit.service",
-        "rc_control_node.service",
-        "ros2_external_node_reg.service",
-        "ros2_px4_translation_node.service",
-        "rsyslog.service",
-        "ssh.service",
-        "systemd-journald.service",
-        "systemd-logind.service",
-        "systemd-resolved.service",
-        "systemd-timesyncd.service",
-        "systemd-udevd.service",
-        "tfmini.service",
-        "vision_streaming.service",
-        "wifibroadcast@drone.service",
-    ]
+    default_services = RELAY_SERVICES if target == "relay" else COMPANION_SERVICES
+    services = cfg.get("important_services") or default_services
 
     if target == "companion":
         ip, port = pick_companion_host(cfg)
@@ -472,8 +499,8 @@ def services_actions(args, cfg):
         svc_list = " ".join(f'"{s}"' for s in services)
         cmd = (
             f"bash -lc 'for s in {svc_list}; do "
-            f'a=$(systemctl is-active "$s" 2>/dev/null || echo unknown); '
-            f'e=$(systemctl is-enabled "$s" 2>/dev/null || echo unknown); '
+            f'a=$(systemctl is-active "$s" 2>/dev/null); a=${{a:-unknown}}; '
+            f'e=$(systemctl is-enabled "$s" 2>/dev/null); e=${{e:-unknown}}; '
             f'echo "$s|$a|$e"; done\''
         )
         return run_cmd(*ssh_exec(ip, port, username, password, cmd))
