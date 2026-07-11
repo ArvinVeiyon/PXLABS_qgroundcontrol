@@ -4,6 +4,7 @@
 
 #include <QCoreApplication>
 #include <QFile>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -121,10 +122,21 @@ void PXLABSLinkMonitor::launchMonitorApp()
     if (!_monitorProc) {
         _monitorProc = new QProcess(this);
     }
-    _monitorProc->setWorkingDirectory(dir);
 
-    // pythonw = no console window; fall back to the console launcher if the
-    // windowless interpreter isn't on PATH.
+    // Installed machines: the PyInstaller-frozen monitor ships next to
+    // pxlabs_cli.exe — no Python required. Dev machines fall back to
+    // pythonw on the source tree (no console window), then run_monitor.bat.
+    const QString bundled = QCoreApplication::applicationDirPath()
+                            + QStringLiteral("/tools/wfb-link-monitor/wfb-link-monitor.exe");
+    if (QFile::exists(bundled)) {
+        _monitorProc->setWorkingDirectory(QFileInfo(bundled).absolutePath());
+        _monitorProc->setProgram(bundled);
+        _monitorProc->setArguments({});
+        _monitorProc->start();
+        return;
+    }
+
+    _monitorProc->setWorkingDirectory(dir);
     _monitorProc->setProgram(QStringLiteral("pythonw"));
     _monitorProc->setArguments({ QStringLiteral("-m"), QStringLiteral("wfb_link_monitor.main") });
     _monitorProc->start();

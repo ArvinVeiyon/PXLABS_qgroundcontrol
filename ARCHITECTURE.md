@@ -19,8 +19,9 @@ Full network, data-flow, and software architecture for the Vind-Roz drone system
 ```mermaid
 graph TB
     subgraph PC["🖥️  Windows PC · 10.5.6.50"]
-        GC["G-Control.exe\n──────────────────\nQGC PXLABS v3.1.0\nQt6 · GStreamer 1.22"]
+        GC["G-Control.exe\n──────────────────\nQGC PXLABS v3.2.0\nQt6 · GStreamer 1.22"]
         CLI["pxlabs_cli.exe\n──────────────────\nSSH command bridge"]
+        MON["wfb-link-monitor.exe\n──────────────────\nlink deep-dive (PyQt)\nTCP :8103 → relay"]
     end
 
     subgraph RLY["📡  Vind-Rly — Relay Station  ·  RPi5 · Ubuntu 24.04"]

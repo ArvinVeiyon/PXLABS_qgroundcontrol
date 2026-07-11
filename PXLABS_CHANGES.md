@@ -10,19 +10,21 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 
 | Version | Tag | Branch | Date | Status |
 |---------|-----|--------|------|--------|
-| v3.1.0 | `PXLABS-v3.1.0` | `PXLABS-integration` | 2026-07-11 | ✅ Latest — control-plane API facade (`Pxlabs` + `PXLABSCommandBus`): queued command bus with request correlation + Interactive-preempts-Background priority. Closes A1 (shared-runner contention), B1 (camera quick-buttons no longer silently dropped), B5 (QStringList args, no space-splitting). B4 partial (QGC side no longer shells). Removes the `pxlabs_bg_active` on-disk mutex, retry timers, flag-routing, Abort buttons across all 6 QML panels. cmake/Git.cmake version-parse fix. Legacy `PXLABSCommandRunner` kept for rollback |
+| v3.2.0 | `PXLABS-v3.2.0` | `PXLABS-integration` | 2026-07-12 | ✅ Latest — **WFB config editor** (Settings→WFB Config: watchdog-guarded `wifibroadcast.cfg` editing with on-device auto-rollback; apply-to-both `set-both` choreography companion→relay with matched-ends guarantee, live-tested MCS 1→2→1; auto-load on open/target switch; per-side TX power; secondary-IP config UI). **AIR/WFB toolbar link chips** fed by `PXLABSLinkMonitor` (direct TCP client on the relay 8103 wfb-ng JSON feed; host follows `relay_ip` in ssh_config.json); click opens the bundled **WFB Link Monitor** (frozen PyQt app, single-instance, closes with G-Control) |
+| v3.1.0 | `PXLABS-v3.1.0` | `PXLABS-integration` | 2026-07-11 | Previous stable — control-plane API facade (`Pxlabs` + `PXLABSCommandBus`): queued command bus with request correlation + Interactive-preempts-Background priority. Closes A1 (shared-runner contention), B1 (camera quick-buttons no longer silently dropped), B5 (QStringList args, no space-splitting). B4 partial (QGC side no longer shells). Removes the `pxlabs_bg_active` on-disk mutex, retry timers, flag-routing, Abort buttons across all 6 QML panels. cmake/Git.cmake version-parse fix. Legacy `PXLABSCommandRunner` kept for rollback |
 | v3.0.0 | `PXLABS-v3.0.0` | `release/PXLABS-v3.0` | 2026-06-14 | Previous stable — relay services panel fix (per-target lists + bash parsing fix), FlyView shutdown/reboot acknowledgement, camera resolution/FPS/format dropdowns |
 | v2.2.1 | `PXLABS-v2.2.1` | `PXLABS-integration` | 2026-06-04 | Previous stable — CLI shutdown/ssh-terminal fixes, NSIS 3.11 compat, FlyView panel responsiveness |
 | v2.2.0 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | 2026-03-22 | Previous stable |
 | v2.1.0 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | 2026-03-20 | Previous stable |
 
-### Installer (v3.1.0 — latest)
+### Installer (v3.2.0 — latest)
 
-`G-Control-Setup-v3.1.0.exe` at `installer\G-Control-Setup-v3.1.0.exe` (~117 MB, LZMA compressed).
-Previous: `G-Control-Setup-v3.0.0.exe` (tag `PXLABS-v3.0.0`), `G-Control-Setup-v2.2.1.exe` (tag `PXLABS-v2.2.1`), `G-Control-Setup-v2.2.0.exe` (tag `PXLABS-v2.2.0`).
+`G-Control-Setup-v3.2.0.exe` at `installer\G-Control-Setup-v3.2.0.exe` (LZMA compressed).
+Previous: `G-Control-Setup-v3.1.0.exe` (~117 MB, tag `PXLABS-v3.1.0`), `G-Control-Setup-v3.0.0.exe` (tag `PXLABS-v3.0.0`), `G-Control-Setup-v2.2.1.exe` (tag `PXLABS-v2.2.1`), `G-Control-Setup-v2.2.0.exe` (tag `PXLABS-v2.2.0`).
 
 - Installs to `C:\Program Files\G-Control\`
 - Bundles `pxlabs_cli.exe` — no Python required on target machine
+- **(v3.2.0)** Bundles the **WFB Link Monitor** at `tools\wfb-link-monitor\wfb-link-monitor.exe` (PyInstaller-frozen PyQt5, ~98 MB onedir) — `PXLABSLinkMonitor::launchMonitorApp()` prefers this bundled exe; dev machines without it fall back to `pythonw -m wfb_link_monitor.main` on `E:\wfb-link-monitor` (source repo). Refreeze after monitor changes: `cd E:\wfb-link-monitor && python -m PyInstaller --noconfirm --windowed --name wfb-link-monitor --distpath E:/qgc-pxlabs/build_clean/Release/tools --workpath E:/wfb-link-monitor/build_pyinstaller launcher.py`
 - Sets `GST_PLUGIN_PATH` in user environment automatically
 - Creates Start Menu + Desktop shortcuts
 - Registers in Add/Remove Programs (64-bit registry)
@@ -40,10 +42,12 @@ Previous: `G-Control-Setup-v3.0.0.exe` (tag `PXLABS-v3.0.0`), `G-Control-Setup-v
 - **Line added (~72):** `#include "PXLABSCommandRunner.h"`
 - **Lines added (~310):** `qmlRegisterSingletonType<PXLABSCommandRunner>(...)` — registers `PXLABSRunner` singleton to QML URI `QGroundControl.PXLABS`
 - **(v3.1.0) Lines added:** `#include "PXLABSApi.h"` + register the `Pxlabs` singleton facade to `QGroundControl.PXLABS` (legacy `PXLABSRunner` left registered for rollback)
+- **(v3.2.0) Lines added:** `#include "PXLABSLinkMonitor.h"` + register the `PxlabsLink` singleton (live WFB link health for the toolbar chips)
 
 ### 2. `src/Utilities/CMakeLists.txt`
 - **Lines added:** `PXLABSCommandRunner.cc` and `PXLABSCommandRunner.h` added to `target_sources`
 - **(v3.1.0) Lines added:** `PXLABSApi.{cc,h}` and `PXLABSCommandBus.{cc,h}` added to `target_sources`
+- **(v3.2.0) Lines added:** `PXLABSLinkMonitor.{cc,h}` added to `target_sources`
 
 ### 3. `src/UI/AppSettings/CMakeLists.txt`
 - **Lines added:** `ConnectionControl.qml`, `PXLABSSettings.qml`, `CompanionControl.qml`, `RelayControl.qml` added to `QML_FILES`
@@ -83,6 +87,10 @@ Previous: `G-Control-Setup-v3.0.0.exe` (tag `PXLABS-v3.0.0`), `G-Control-Setup-v
   - `pxlabs_wifi_temp_interval` setting (seconds) controls Timer interval (min 10s)
   - `_pxWifiFetch` flag gates PXLABSRunner Connections so toolbar only consumes `wifi-temp` responses
   - `Component.onCompleted: { _pxLoadSettings(); Qt.callLater(_pxFetchWifi) }` — loads settings and fetches on startup
+- **(v3.2.0)** AIR + WFB link chips (`pxAirChip`, `pxWfbLinkChip`), anchored left of the Comp/Relay chip:
+  - `AIR <util>%` (green <60 / orange 60–85 / red >85) and `WFB <quality>%` (GOOD/WARN/CRIT dot), grey `––` when the 8103 feed is down
+  - Live values from the `PxlabsLink` singleton (no polling via CLI — direct TCP)
+  - Clicking either chip calls `PxlabsLink.launchMonitorApp()` → opens the standalone WFB Link Monitor (bundled exe preferred, single-instance, closes with G-Control)
 
 ---
 
@@ -94,6 +102,8 @@ Previous: `G-Control-Setup-v3.0.0.exe` (tag `PXLABS-v3.0.0`), `G-Control-Setup-v
 | `src/Utilities/PXLABSCommandBus.h` / `.cc` | **(v3.1.0)** Queued command engine + `PXLABSRequest` correlation object. `enqueue()` never rejects (returns a request); per-request signals; Interactive priority preempts a running Background poll; Background polls coalesce; args passed as `QStringList` (no shell) |
 | `src/Utilities/PXLABSCommandRunner.h` | C++ QObject — QProcess wrapper, exposes `PXLABSRunner` singleton to QML. **(v3.1.0: superseded by the `Pxlabs` facade; kept registered for rollback)** |
 | `src/Utilities/PXLABSCommandRunner.cc` | Implementation — runs `pxlabs_cli.exe <args>` (installed) or `python pxlabs_cli.py <args>` (dev); auto-detected by `.exe` extension |
+| `src/Utilities/PXLABSLinkMonitor.h` / `.cc` | **(v3.2.0)** `PxlabsLink` singleton — TCP client on the relay's wfb-ng 8103 JSON feed (host follows `relay_ip` in ssh_config.json, QSettings override). Computes link quality (worst rx stream: loss/FEC/SNR-margin penalties) + air utilization (vs 70 % of PHY rate); CPE610 RSSI-scale handling. `launchMonitorApp()` opens the bundled/dev WFB Link Monitor |
+| `src/UI/AppSettings/WFBConfig.qml` | **(v3.2.0)** Settings → WFB Config — safe `wifibroadcast.cfg` editor: auto-load on open/target switch, Apply-to-Link (both ends via `wfb-config set-both`), per-side TX power, secondary-IP config, channel/bandwidth gated behind Check Secondary. Every apply watchdog-guarded on-device (auto-rollback). See `WFB_CONFIG_EDITOR.md` |
 | `src/UI/AppSettings/ConnectionControl.qml` | **Settings page — SSH config for companion + relay. CONFIGURE FIRST before using CLI. Also: Periodic Connection Check settings + Wi-Fi Temperature Polling settings.** |
 | `src/UI/AppSettings/PXLABSSettings.qml` | Settings page — Python path, CLI path, Test CLI |
 | `src/UI/AppSettings/CompanionControl.qml` | Settings page — Camera switch, Camera Device (Advanced: query/set params), System, Services. Capture removed (QGC has native capture). |

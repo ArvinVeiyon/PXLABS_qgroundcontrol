@@ -1,10 +1,10 @@
 ; G-Control Setup — NSIS Installer Script
-; Builds G-Control-Setup-v3.1.0.exe
+; Builds G-Control-Setup-v3.2.0.exe
 ; Requirements: NSIS 3.x  (makensis.exe in PATH or at default install location)
 ; Run: makensis G-Control-Setup.nsi  (from installer\ directory)
 
 !define APP_NAME        "G-Control"
-!define APP_VERSION     "3.1.0"
+!define APP_VERSION     "3.2.0"
 !define APP_PUBLISHER   "PXLABS"
 !define APP_EXE         "G-Control.exe"
 !define INSTALL_DIR     "$PROGRAMFILES64\G-Control"
@@ -78,6 +78,10 @@ Section "G-Control (required)" SecMain
     ; ---- PXLABS CLI (bundled exe, no Python required) ----
     SetOutPath "$INSTDIR\tools"
     File "${SRC}\tools\pxlabs_cli.exe"
+
+    ; ---- WFB Link Monitor (frozen PyQt app, launched by the AIR/WFB chips) ----
+    SetOutPath "$INSTDIR\tools"
+    File /r "${SRC}\tools\wfb-link-monitor"
 
     ; ---- Config (don't overwrite existing user config) ----
     SetOutPath "$INSTDIR\config"
