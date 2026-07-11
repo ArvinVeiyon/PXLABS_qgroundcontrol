@@ -40,27 +40,44 @@ Rectangle {
     property string _compStatus:        "—"   // "reachable" | "unreachable" | "—"
     property string _relayStatus:       "—"
     property bool   _statusFetch:       false
-    property bool   _statusCheckPending: false  // queued when runner was busy
     property bool   _pxConnEnabled:     false
     property int    _pxConnInterval:    120
 
+    // Background polls run at Background priority: they coalesce (no stacking),
+    // yield to interactive commands, and are killed silently if a click preempts
+    // them — so no busy-mutex or pending-retry bookkeeping is needed here.
     function _pxFetchWifi() {
-        if (PXLABSRunner.running) return
-        // Mark background so user panels can abort-and-retry instead of seeing busy error
-        QGroundControl.saveGlobalSetting("pxlabs_bg_active", "1")
+        if (_pxWifiFetch) return
         _pxWifiFetch = true
         // Do NOT reset _pxWifiTemp — keep last known value; only the ↻ spinner reflects activity
-        PXLABSRunner.run("companion wifi-temp")
+        var req = Pxlabs.companion.wifiTemp()
+        req.outputChanged.connect(function() {
+            // Scan every line for a parseable number — robust to stderr mixed in
+            var tlines = req.output.split('\n')
+            for (var i = 0; i < tlines.length; i++) {
+                var line = tlines[i].trim()
+                if (line.length === 0) continue
+                var v = parseFloat(line)
+                if (!isNaN(v)) { _root._pxWifiTemp = line; return }
+            }
+        })
+        // Genuine failure (not a silent preempt) with no value yet → mark N/A.
+        req.failed.connect(function() { if (_root._pxWifiTemp === "—") _root._pxWifiTemp = "N/A" })
+        req.completeChanged.connect(function() { if (req.complete) _root._pxWifiFetch = false })
     }
     function _fetchStatus() {
-        if (PXLABSRunner.running) {
-            _statusCheckPending = true   // retry when current command finishes
-            return
-        }
-        _statusCheckPending = false
-        QGroundControl.saveGlobalSetting("pxlabs_bg_active", "1")
+        if (_statusFetch) return
         _statusFetch = true
-        PXLABSRunner.run("status")
+        var req = Pxlabs.status(true)
+        req.outputChanged.connect(function() {
+            var lines = req.output.split('\n')
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i].trim()
+                if (line.startsWith("COMPANION:"))  _root._compStatus  = line.substring(10)
+                else if (line.startsWith("RELAY:")) _root._relayStatus = line.substring(6)
+            }
+        })
+        req.completeChanged.connect(function() { if (req.complete) _root._statusFetch = false })
     }
     function _pxLoadSettings() {
         _pxWifiEnabled  = (QGroundControl.loadGlobalSetting("pxlabs_wifi_temp_enabled",  "false") === "true")
@@ -95,62 +112,8 @@ Rectangle {
         onTriggered: _root._fetchStatus()
     }
 
-    Connections {
-        target: PXLABSRunner
-
-        function onOutputReady(text) {
-            if (_root._statusFetch) {
-                const lines = text.split('\n')
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i].trim()
-                    if (line.startsWith("COMPANION:"))  _root._compStatus  = line.substring(10)
-                    else if (line.startsWith("RELAY:")) _root._relayStatus = line.substring(6)
-                }
-                return
-            }
-            if (!_root._pxWifiFetch) return
-            // Scan every line for a parseable number — robust to stderr mixed in
-            const tlines = text.split('\n')
-            for (let i = 0; i < tlines.length; i++) {
-                const line = tlines[i].trim()
-                if (line.length === 0) continue
-                const v = parseFloat(line)
-                if (!isNaN(v)) { _root._pxWifiTemp = line; return }
-            }
-        }
-
-        function onCommandFinished(exitCode) {
-            if (_root._statusFetch) {
-                _root._statusFetch = false
-                QGroundControl.saveGlobalSetting("pxlabs_bg_active", "0")
-            } else if (_root._pxWifiFetch) {
-                _root._pxWifiFetch = false
-                // Only set unavailable if we never received any real value yet
-                if (exitCode !== 0 && _root._pxWifiTemp === "—") _root._pxWifiTemp = "N/A"
-                QGroundControl.saveGlobalSetting("pxlabs_bg_active", "0")
-            }
-            if (_root._statusCheckPending) Qt.callLater(_root._fetchStatus)
-        }
-
-        function onCommandFailed(errorText) {
-            if (_root._statusFetch) {
-                _root._statusFetch = false
-                QGroundControl.saveGlobalSetting("pxlabs_bg_active", "0")
-            } else if (_root._pxWifiFetch) {
-                _root._pxWifiFetch = false
-                // On abort (kill) keep the last known value — don't show N/A for a good reading
-                // On genuine failure only set N/A if we never had a value
-                const wasKilled = errorText.indexOf("killed") >= 0 || errorText.indexOf("crashed") >= 0
-                if (!wasKilled && _root._pxWifiTemp === "—") _root._pxWifiTemp = "N/A"
-                QGroundControl.saveGlobalSetting("pxlabs_bg_active", "0")
-            }
-            if (_root._statusCheckPending) Qt.callLater(_root._fetchStatus)
-        }
-    }
-
     Component.onCompleted: {
         _pxLoadSettings()
-        QGroundControl.saveGlobalSetting("pxlabs_bg_active", "0")  // reset stale flag on start
         Qt.callLater(_pxFetchWifi)
         pxStatusStartupTimer.start()
     }

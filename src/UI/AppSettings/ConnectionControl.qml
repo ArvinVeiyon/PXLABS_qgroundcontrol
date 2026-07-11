@@ -37,27 +37,17 @@ SettingsPage {
         wifiIntervalField.text    = QGroundControl.loadGlobalSetting("pxlabs_wifi_temp_interval",  "60")
     }
 
-    Connections {
-        target: PXLABSRunner
-        function onOutputReady(text)         { if (_busy) outputArea.text = text }
-        function onCommandFinished(exitCode) {
-            if (!_busy) return
-            _busy = false
-            if (exitCode !== 0) outputArea.text += qsTr("\n[Exit code: %1]").arg(exitCode)
-            else outputArea.text += qsTr("\n✓ Saved")
-        }
-        function onCommandFailed(errorText)  {
-            if (!_busy) return
-            _busy = false
-            outputArea.text = qsTr("ERROR: ") + errorText
-        }
+    // Dispatch a facade request and route its correlated output to this panel.
+    // okMsg (optional) is appended once the command succeeds.
+    function _dispatch(req, okMsg) {
+        _busy = true
+        req.outputChanged.connect(function() { outputArea.text = req.output })
+        req.succeeded.connect(function(exitCode) { _busy = false; if (okMsg) outputArea.text += okMsg })
+        req.failed.connect(function(errorText)   { _busy = false; outputArea.text = qsTr("ERROR: ") + errorText })
+        return req
     }
 
     function _saveCompanion() {
-        if (PXLABSRunner.running) {
-            outputArea.text = qsTr("⚠ Runner busy — please retry in a moment.")
-            return
-        }
         QGroundControl.saveGlobalSetting("pxlabs_primary_ip",     primaryIpField.text.trim())
         QGroundControl.saveGlobalSetting("pxlabs_primary_port",   primaryPortField.text.trim())
         QGroundControl.saveGlobalSetting("pxlabs_secondary_ip",   secondaryIpField.text.trim())
@@ -65,37 +55,29 @@ SettingsPage {
         QGroundControl.saveGlobalSetting("pxlabs_companion_user", compUserField.text.trim())
 
         outputArea.text = ""
-        _busy = true
-        let args = "config set"
-            + " --primary-ip "     + primaryIpField.text.trim()
-            + " --primary-port "   + primaryPortField.text.trim()
-            + " --secondary-port " + secondaryPortField.text.trim()
-            + " --username "       + compUserField.text.trim()
-        if (secondaryIpField.text.trim().length > 0)
-            args += " --secondary-ip " + secondaryIpField.text.trim()
-        if (compPassField.text.length > 0)
-            args += " --companion-password " + compPassField.text
-        PXLABSRunner.run(args)
+        // Empty optional fields (secondary-ip, companion-password) are dropped by configSet.
+        _dispatch(Pxlabs.configSet({
+            "primary-ip":         primaryIpField.text.trim(),
+            "primary-port":       primaryPortField.text.trim(),
+            "secondary-port":     secondaryPortField.text.trim(),
+            "username":           compUserField.text.trim(),
+            "secondary-ip":       secondaryIpField.text.trim(),
+            "companion-password": compPassField.text
+        }), qsTr("\n✓ Saved"))
     }
 
     function _saveRelay() {
-        if (PXLABSRunner.running) {
-            outputArea.text = qsTr("⚠ Runner busy — please retry in a moment.")
-            return
-        }
         QGroundControl.saveGlobalSetting("pxlabs_relay_ip",   relayIpField.text.trim())
         QGroundControl.saveGlobalSetting("pxlabs_relay_port", relayPortField.text.trim())
         QGroundControl.saveGlobalSetting("pxlabs_relay_user", relayUserField.text.trim())
 
         outputArea.text = ""
-        _busy = true
-        let args = "config set"
-            + " --relay-ip "       + relayIpField.text.trim()
-            + " --relay-ssh-port " + relayPortField.text.trim()
-            + " --relay-username " + relayUserField.text.trim()
-        if (relayPassField.text.length > 0)
-            args += " --relay-password " + relayPassField.text
-        PXLABSRunner.run(args)
+        _dispatch(Pxlabs.configSet({
+            "relay-ip":       relayIpField.text.trim(),
+            "relay-ssh-port": relayPortField.text.trim(),
+            "relay-username": relayUserField.text.trim(),
+            "relay-password": relayPassField.text
+        }), qsTr("\n✓ Saved"))
     }
 
     // -----------------------------------------------------------------------
@@ -285,12 +267,6 @@ SettingsPage {
             Layout.fillWidth: true
             spacing: ScreenTools.defaultFontPixelWidth
 
-            QGCButton {
-                text:      qsTr("Abort")
-                enabled:   _busy
-                onClicked: PXLABSRunner.abort()
-            }
-
             QGCLabel {
                 text:  _busy ? qsTr("Running…") : qsTr("Idle")
                 color: _busy ? QGroundControl.globalPalette.colorOrange : QGroundControl.globalPalette.text
@@ -301,12 +277,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Show Config")
                 enabled:   !_busy
-                onClicked: {
-                    if (PXLABSRunner.running) { outputArea.text = qsTr("⚠ Runner busy — please retry."); return }
-                    outputArea.text = ""
-                    _busy = true
-                    PXLABSRunner.run("config show")
-                }
+                onClicked: { outputArea.text = ""; _dispatch(Pxlabs.configShow()) }
             }
 
             QGCButton {

@@ -14,27 +14,9 @@ import QGroundControl.PXLABS
 SettingsPage {
     id: root
 
-    property bool   _busy:             false   // own commands only — not global runner state
-    property bool   _pendingRefresh:   false   // true after wfb switch — run refresh next
-    property string _bgRetryArgs:      ""      // queued args while waiting for bg abort to settle
-    property bool   _bgRetryIsSwitch:  false   // true if the retry is a wfb switch
-
-    Timer {
-        id:       bgRetryTimer
-        interval: 400
-        repeat:   false
-        onTriggered: {
-            if (PXLABSRunner.running) return
-            outputArea.text = ""
-            root._busy = true
-            if (root._bgRetryIsSwitch) root._pendingRefresh = true
-            PXLABSRunner.run(root._bgRetryArgs)
-        }
-    }
+    property bool   _busy:      false   // own commands only — bus state is global
 
     // Services — dynamic list populated by refresh
-    property bool   _svcRefreshActive: false
-    property string _svcLastOutput:    ""
     property var    _svcNames: [
         "wifibroadcast@gs.service", "wifibroadcast-cluster@gs.service",
         "mavlink.router.service", "ssh-tunnel-to-companion.service",
@@ -46,80 +28,48 @@ SettingsPage {
         return t.length > 0 ? t : relaySvcCombo.currentText
     }
 
-    function _run(args) {
-        if (PXLABSRunner.running) {
-            if (QGroundControl.loadGlobalSetting("pxlabs_bg_active", "0") === "1") {
-                _bgRetryArgs = args
-                _bgRetryIsSwitch = false
-                PXLABSRunner.abort()
-                bgRetryTimer.start()
-            } else {
-                outputArea.text = qsTr("⚠ Runner busy — please retry in a moment.")
-            }
-            return
+    // Parse SA/CA lines from wfb output and persist so the fly view glyph stays in sync.
+    function _parseSaCa(text) {
+        var saMatch = text.match(/^SA:(\S+)/m)
+        var caMatch = text.match(/^CA:(\S+)/m)
+        if (saMatch && caMatch) {
+            var sa = saMatch[1]; var ca = caMatch[1]
+            var mode = (sa === "active" && ca !== "active") ? "standalone" :
+                       (ca === "active" && sa !== "active") ? "cluster"    : ""
+            if (mode !== "") QGroundControl.saveGlobalSetting("pxlabs_wfb_mode", mode)
         }
-        outputArea.text = ""
-        _busy = true
-        PXLABSRunner.run(args)
     }
 
+    // Dispatch a facade request; route its correlated output back to this panel.
+    function _dispatch(req) {
+        _busy = true
+        outputArea.text = ""
+        req.outputChanged.connect(function() { outputArea.text = req.output; _parseSaCa(req.output) })
+        req.succeeded.connect(function(exitCode) { _busy = false })
+        req.failed.connect(function(errorText)   { _busy = false; outputArea.text = qsTr("ERROR: ") + errorText })
+        return req
+    }
+
+    // Refresh the services list, then repopulate the selector from the output.
+    function _refreshServices() {
+        var req = _dispatch(Pxlabs.relay.servicesRefresh())
+        req.succeeded.connect(function() {
+            var lines = req.output.split('\n')
+            var names = []
+            for (var i = 0; i < lines.length; i++) {
+                var parts = lines[i].trim().split('|')
+                if (parts.length >= 2 && parts[0].length > 0) names.push(parts[0])
+            }
+            if (names.length > 0) _svcNames = names
+        })
+    }
+
+    // Switch WFB mode, then refresh once it settles (regardless of outcome).
     function _switchWfb(mode) {
-        if (PXLABSRunner.running) {
-            if (QGroundControl.loadGlobalSetting("pxlabs_bg_active", "0") === "1") {
-                _bgRetryArgs = "relay wfb switch --mode " + mode
-                _bgRetryIsSwitch = true
-                PXLABSRunner.abort()
-                bgRetryTimer.start()
-            } else {
-                outputArea.text = qsTr("⚠ Runner busy — please retry in a moment.")
-            }
-            return
-        }
-        _pendingRefresh = true
-        outputArea.text = ""
-        _busy = true
-        PXLABSRunner.run("relay wfb switch --mode " + mode)
-    }
-
-    Connections {
-        target: PXLABSRunner
-        function onOutputReady(text) {
-            if (!_busy) return
-            outputArea.text = text
-            if (_svcRefreshActive) _svcLastOutput = text
-            // Parse SA/CA lines from wfb refresh and persist so fly view glyph stays in sync
-            var saMatch = text.match(/^SA:(\S+)/m)
-            var caMatch = text.match(/^CA:(\S+)/m)
-            if (saMatch && caMatch) {
-                var sa = saMatch[1]; var ca = caMatch[1]
-                var mode = (sa === "active" && ca !== "active") ? "standalone" :
-                           (ca === "active" && sa !== "active") ? "cluster"    : ""
-                if (mode !== "") QGroundControl.saveGlobalSetting("pxlabs_wfb_mode", mode)
-            }
-        }
-        function onCommandFinished(exitCode) {
-            if (!_busy) return
-            _busy = false
-            if (_svcRefreshActive) {
-                _svcRefreshActive = false
-                var lines = _svcLastOutput.split('\n')
-                var names = []
-                for (var i = 0; i < lines.length; i++) {
-                    var parts = lines[i].trim().split('|')
-                    if (parts.length >= 2 && parts[0].length > 0) names.push(parts[0])
-                }
-                if (names.length > 0) _svcNames = names
-            }
-            if (exitCode !== 0) outputArea.text += qsTr("\n[Exit code: %1]").arg(exitCode)
-            if (_pendingRefresh) { _pendingRefresh = false; Qt.callLater(function() { _run("relay wfb refresh") }) }
-        }
-        function onCommandFailed(errorText)  {
-            if (!_busy) return
-            _busy = false
-            _svcRefreshActive = false
-            _pendingRefresh = false
-            outputArea.text = qsTr("ERROR: ") + errorText
-        }
+        var req = _dispatch(Pxlabs.relay.wfbSwitch(mode))
+        req.completeChanged.connect(function() {
+            if (req.complete) Qt.callLater(function() { _dispatch(Pxlabs.relay.wfbRefresh()) })
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -153,25 +103,25 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Refresh")
                 enabled:   !_busy
-                onClicked: _run("relay wfb refresh")
+                onClicked: _dispatch(Pxlabs.relay.wfbRefresh())
             }
 
             QGCButton {
                 text:      qsTr("Status")
                 enabled:   !_busy
-                onClicked: _run("relay wfb status")
+                onClicked: _dispatch(Pxlabs.relay.wfbStatus())
             }
 
             QGCButton {
                 text:      qsTr("Logs")
                 enabled:   !_busy
-                onClicked: _run("relay wfb logs")
+                onClicked: _dispatch(Pxlabs.relay.wfbLogs())
             }
 
             QGCButton {
                 text:      qsTr("View Config")
                 enabled:   !_busy
-                onClicked: _run("relay wfb view-config")
+                onClicked: _dispatch(Pxlabs.relay.wfbViewConfig())
             }
         }
     }
@@ -190,7 +140,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("List NICs")
                 enabled:   !_busy
-                onClicked: _run("relay wfb list-nics")
+                onClicked: _dispatch(Pxlabs.relay.wfbListNics())
             }
 
             QGCLabel { text: qsTr("Set NICs:") }
@@ -204,7 +154,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Set NICs")
                 enabled:   !_busy && nicsField.text.trim() !== ""
-                onClicked: _run("relay wfb set-nics --nics " + nicsField.text.trim())
+                onClicked: _dispatch(Pxlabs.relay.wfbSetNics(nicsField.text.trim()))
             }
         }
     }
@@ -223,7 +173,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("SSH Terminal")
                 enabled:   !_busy
-                onClicked: _run("relay ssh-terminal")
+                onClicked: _dispatch(Pxlabs.relay.sshTerminal())
             }
 
             QGCButton {
@@ -251,7 +201,7 @@ SettingsPage {
                 spacing: ScreenTools.defaultFontPixelWidth
                 QGCButton {
                     text:      qsTr("Yes — Reboot")
-                    onClicked: { relayRebootConfirm.visible = false; _run("relay reboot") }
+                    onClicked: { relayRebootConfirm.visible = false; _dispatch(Pxlabs.relay.reboot()) }
                 }
                 QGCButton {
                     text:      qsTr("Cancel")
@@ -272,7 +222,7 @@ SettingsPage {
                 spacing: ScreenTools.defaultFontPixelWidth
                 QGCButton {
                     text:      qsTr("Yes — Shutdown")
-                    onClicked: { relayShutdownConfirm.visible = false; _run("relay shutdown") }
+                    onClicked: { relayShutdownConfirm.visible = false; _dispatch(Pxlabs.relay.shutdown()) }
                 }
                 QGCButton {
                     text:      qsTr("Cancel")
@@ -296,7 +246,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Refresh Status")
                 enabled:   !_busy
-                onClicked: { _svcRefreshActive = true; _run("services refresh --target relay") }
+                onClicked: _refreshServices()
             }
 
             QGCLabel {
@@ -342,31 +292,31 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Start")
                 enabled:   !_busy
-                onClicked: _run("services start --target relay --service " + _resolvedSvc())
+                onClicked: _dispatch(Pxlabs.relay.serviceStart(_resolvedSvc()))
             }
 
             QGCButton {
                 text:      qsTr("Stop")
                 enabled:   !_busy
-                onClicked: _run("services stop --target relay --service " + _resolvedSvc())
+                onClicked: _dispatch(Pxlabs.relay.serviceStop(_resolvedSvc()))
             }
 
             QGCButton {
                 text:      qsTr("Restart")
                 enabled:   !_busy
-                onClicked: _run("services restart --target relay --service " + _resolvedSvc())
+                onClicked: _dispatch(Pxlabs.relay.serviceRestart(_resolvedSvc()))
             }
 
             QGCButton {
                 text:      qsTr("Enable")
                 enabled:   !_busy
-                onClicked: _run("services enable --target relay --service " + _resolvedSvc())
+                onClicked: _dispatch(Pxlabs.relay.serviceEnable(_resolvedSvc()))
             }
 
             QGCButton {
                 text:      qsTr("Disable")
                 enabled:   !_busy
-                onClicked: _run("services disable --target relay --service " + _resolvedSvc())
+                onClicked: _dispatch(Pxlabs.relay.serviceDisable(_resolvedSvc()))
             }
         }
     }
@@ -381,12 +331,6 @@ SettingsPage {
         RowLayout {
             Layout.fillWidth: true
             spacing: ScreenTools.defaultFontPixelWidth
-
-            QGCButton {
-                text:      qsTr("Abort")
-                enabled:   _busy
-                onClicked: PXLABSRunner.abort()
-            }
 
             QGCLabel {
                 text:  _busy ? qsTr("Running…") : qsTr("Idle")

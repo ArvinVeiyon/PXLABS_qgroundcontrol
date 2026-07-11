@@ -14,26 +14,9 @@ import QGroundControl.PXLABS
 SettingsPage {
     id: root
 
-    property bool   _busy:        false   // own commands only — not global runner state
-    property string _swap:        swapCheck.checked ? " --swap" : ""
-    property string _bgRetryArgs: ""      // queued args while waiting for bg abort to settle
-
-    // After aborting a background fetch, retry the user command once the runner is free
-    Timer {
-        id:       bgRetryTimer
-        interval: 400
-        repeat:   false
-        onTriggered: {
-            if (PXLABSRunner.running) return   // still busy — give up silently
-            outputArea.text = ""
-            root._busy = true
-            PXLABSRunner.run(root._bgRetryArgs)
-        }
-    }
+    property bool _busy: false   // own commands only — bus state is global
 
     // Services — dynamic list populated by refresh
-    property bool   _svcRefreshActive: false
-    property string _svcLastOutput:    ""
     property var    _svcNames: [
         "mavlink.router.service", "microxrce-agent.service",
         "rc_control_node.service", "vision_streaming.service",
@@ -43,8 +26,6 @@ SettingsPage {
     ]
 
     // Camera resolution/fps/format — dynamic lists populated by camera-query
-    property bool   _camQueryActive: false
-    property string _camLastOutput:  ""
     property var    _camFmtMap:      ({})   // format -> { order: [resolutions], fps: {resolution: [fps]} }
     property var    _camFormatList:  ["MJPG", "UYVY"]
     property string _camDetectedFmt: ""
@@ -62,21 +43,34 @@ SettingsPage {
         return (fps && fps.length > 0) ? fps : ["60", "30", "15", "10", "5"]
     }
 
-    function _run(args) {
-        if (PXLABSRunner.running) {
-            if (QGroundControl.loadGlobalSetting("pxlabs_bg_active", "0") === "1") {
-                // Background poll is running — abort it and retry user command automatically
-                _bgRetryArgs = args
-                PXLABSRunner.abort()
-                bgRetryTimer.start()
-            } else {
-                outputArea.text = qsTr("⚠ Runner busy — please retry in a moment.")
-            }
-            return
-        }
-        outputArea.text = ""
+    // Dispatch a facade request; route its correlated output back to this panel.
+    function _dispatch(req) {
         _busy = true
-        PXLABSRunner.run(args)
+        outputArea.text = ""
+        req.outputChanged.connect(function() { outputArea.text = req.output })
+        req.succeeded.connect(function(exitCode) { _busy = false })
+        req.failed.connect(function(errorText)   { _busy = false; outputArea.text = qsTr("ERROR: ") + errorText })
+        return req
+    }
+
+    // Refresh the services list, then repopulate the selector from the output.
+    function _refreshServices() {
+        var req = _dispatch(Pxlabs.companion.servicesRefresh())
+        req.succeeded.connect(function() {
+            var lines = req.output.split('\n')
+            var names = []
+            for (var i = 0; i < lines.length; i++) {
+                var parts = lines[i].trim().split('|')
+                if (parts.length >= 2 && parts[0].length > 0) names.push(parts[0])
+            }
+            if (names.length > 0) _svcNames = names
+        })
+    }
+
+    // Query the camera, then populate the resolution/fps/format dropdowns on success.
+    function _cameraQuery(device) {
+        var req = _dispatch(Pxlabs.companion.cameraQuery(device))
+        req.succeeded.connect(function() { _applyCameraQuery(req.output) })
     }
 
     function _resolvedSvc() {
@@ -155,42 +149,6 @@ SettingsPage {
         })
     }
 
-    Connections {
-        target: PXLABSRunner
-        function onOutputReady(text) {
-            if (!_busy) return
-            outputArea.text = text
-            if (_svcRefreshActive) _svcLastOutput = text
-            if (_camQueryActive)   _camLastOutput = text
-        }
-        function onCommandFinished(exitCode) {
-            if (!_busy) return
-            _busy = false
-            if (_svcRefreshActive) {
-                _svcRefreshActive = false
-                var lines = _svcLastOutput.split('\n')
-                var names = []
-                for (var i = 0; i < lines.length; i++) {
-                    var parts = lines[i].trim().split('|')
-                    if (parts.length >= 2 && parts[0].length > 0) names.push(parts[0])
-                }
-                if (names.length > 0) _svcNames = names
-            }
-            if (_camQueryActive) {
-                _camQueryActive = false
-                if (exitCode === 0) _applyCameraQuery(_camLastOutput)
-            }
-            if (exitCode !== 0) outputArea.text += qsTr("\n[Exit code: %1]").arg(exitCode)
-        }
-        function onCommandFailed(errorText) {
-            if (!_busy) return
-            _busy = false
-            _svcRefreshActive = false
-            _camQueryActive   = false
-            outputArea.text = qsTr("ERROR: ") + errorText
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Camera Control
     // -----------------------------------------------------------------------
@@ -212,25 +170,25 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Front Camera")
                 enabled:   !_busy
-                onClicked: _run("companion front-switch" + _swap)
+                onClicked: _dispatch(Pxlabs.companion.switchCamera("front", swapCheck.checked))
             }
 
             QGCButton {
                 text:      qsTr("Bottom Camera")
                 enabled:   !_busy
-                onClicked: _run("companion bottom-switch" + _swap)
+                onClicked: _dispatch(Pxlabs.companion.switchCamera("bottom", swapCheck.checked))
             }
 
             QGCButton {
                 text:      qsTr("Split: Front+Bottom")
                 enabled:   !_busy
-                onClicked: _run("companion split-front-bottom" + _swap)
+                onClicked: _dispatch(Pxlabs.companion.switchCamera("split-fb", swapCheck.checked))
             }
 
             QGCButton {
                 text:      qsTr("Split: Bottom+Front")
                 enabled:   !_busy
-                onClicked: _run("companion split-bottom-front" + _swap)
+                onClicked: _dispatch(Pxlabs.companion.switchCamera("split-bf", swapCheck.checked))
             }
         }
     }
@@ -258,7 +216,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Query Details")
                 enabled:   !_busy
-                onClicked: { _camQueryActive = true; _run("companion camera-query --device " + deviceCombo.currentText) }
+                onClicked: _cameraQuery(deviceCombo.currentText)
             }
 
             QGCLabel {
@@ -294,10 +252,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Apply")
                 enabled:   !_busy
-                onClicked: _run("companion camera-params --device " + deviceCombo.currentText
-                                + " --resolution " + resCombo.currentText
-                                + " --fps "        + fpsCombo.currentText
-                                + " --format "     + fmtCombo.currentText)
+                onClicked: _dispatch(Pxlabs.companion.setCamParams(deviceCombo.currentText, resCombo.currentText, fpsCombo.currentText, fmtCombo.currentText))
             }
         }
     }
@@ -316,7 +271,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("SSH Terminal")
                 enabled:   !_busy
-                onClicked: _run("companion ssh-terminal")
+                onClicked: _dispatch(Pxlabs.companion.sshTerminal())
             }
 
             QGCButton {
@@ -350,7 +305,7 @@ SettingsPage {
                 spacing: ScreenTools.defaultFontPixelWidth
                 QGCButton {
                     text:      qsTr("Yes — Reboot")
-                    onClicked: { rebootConfirm.visible = false; _run("companion reboot") }
+                    onClicked: { rebootConfirm.visible = false; _dispatch(Pxlabs.companion.reboot()) }
                 }
                 QGCButton {
                     text:      qsTr("Cancel")
@@ -373,7 +328,7 @@ SettingsPage {
                 spacing: ScreenTools.defaultFontPixelWidth
                 QGCButton {
                     text:      qsTr("Yes — Shutdown")
-                    onClicked: { shutdownConfirm.visible = false; _run("companion shutdown") }
+                    onClicked: { shutdownConfirm.visible = false; _dispatch(Pxlabs.companion.shutdown()) }
                 }
                 QGCButton {
                     text:      qsTr("Cancel")
@@ -397,7 +352,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Refresh Status")
                 enabled:   !_busy
-                onClicked: { _svcRefreshActive = true; _run("services refresh --target companion") }
+                onClicked: _refreshServices()
             }
 
             QGCLabel {
@@ -443,31 +398,31 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Start")
                 enabled:   !_busy
-                onClicked: _run("services start --target companion --service " + _resolvedSvc())
+                onClicked: _dispatch(Pxlabs.companion.serviceStart(_resolvedSvc()))
             }
 
             QGCButton {
                 text:      qsTr("Stop")
                 enabled:   !_busy
-                onClicked: _run("services stop --target companion --service " + _resolvedSvc())
+                onClicked: _dispatch(Pxlabs.companion.serviceStop(_resolvedSvc()))
             }
 
             QGCButton {
                 text:      qsTr("Restart")
                 enabled:   !_busy
-                onClicked: _run("services restart --target companion --service " + _resolvedSvc())
+                onClicked: _dispatch(Pxlabs.companion.serviceRestart(_resolvedSvc()))
             }
 
             QGCButton {
                 text:      qsTr("Enable")
                 enabled:   !_busy
-                onClicked: _run("services enable --target companion --service " + _resolvedSvc())
+                onClicked: _dispatch(Pxlabs.companion.serviceEnable(_resolvedSvc()))
             }
 
             QGCButton {
                 text:      qsTr("Disable")
                 enabled:   !_busy
-                onClicked: _run("services disable --target companion --service " + _resolvedSvc())
+                onClicked: _dispatch(Pxlabs.companion.serviceDisable(_resolvedSvc()))
             }
         }
     }
@@ -482,12 +437,6 @@ SettingsPage {
         RowLayout {
             Layout.fillWidth: true
             spacing: ScreenTools.defaultFontPixelWidth
-
-            QGCButton {
-                text:      qsTr("Abort")
-                enabled:   _busy
-                onClicked: PXLABSRunner.abort()
-            }
 
             QGCLabel {
                 text:  _busy ? qsTr("Running…") : qsTr("Idle")

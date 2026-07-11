@@ -3,6 +3,10 @@ target_sources(${CMAKE_PROJECT_NAME}
         # PXLABS integration — additive
         PXLABSCommandRunner.cc
         PXLABSCommandRunner.h
+        PXLABSCommandBus.cc
+        PXLABSCommandBus.h
+        PXLABSApi.cc
+        PXLABSApi.h
         # end PXLABS
         DeviceInfo.cc
         DeviceInfo.h

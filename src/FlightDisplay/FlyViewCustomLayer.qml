@@ -49,25 +49,8 @@ Item {
     }
 
     // Panel status (SSH / other panel commands)
-    property string _panelStatus:    ""
-    property bool   _panelCmdActive: false
-    property string _panelRetryArgs:   ""
-    property string _panelRetryStatus: ""
-    property string _lastPanelCmd:     ""
-
-    // Abort-and-retry: after aborting a background poll, re-run the queued panel command
-    Timer {
-        id:       _panelRetryTimer
-        interval: 400
-        repeat:   false
-        onTriggered: {
-            if (PXLABSRunner.running) return
-            _root._panelStatus    = _root._panelRetryStatus
-            _root._panelCmdActive = true
-            _root._lastPanelCmd   = _root._panelRetryArgs
-            PXLABSRunner.run(_root._panelRetryArgs)
-        }
-    }
+    property string _panelStatus: ""
+    property bool   _panelBusy:   false   // a panel command is in flight
 
     // Auto-clear status 2.5 s after a successful command
     Timer {
@@ -174,98 +157,51 @@ Item {
     // -----------------------------------------------------------------------
     // Other helpers
     // -----------------------------------------------------------------------
-    function _confirm(title, msg, cmd, statusMsg) {
+    // reqFactory is a function that issues the facade call — deferred so the
+    // command only fires when the user confirms.
+    function _confirm(title, msg, reqFactory, statusMsg, doneMsg) {
         mainWindow.showMessageDialog(title, msg, Dialog.Yes | Dialog.No,
-                                     function() { _runPanelCmd(cmd, statusMsg) })
+                                     function() { _runPanelCmd(reqFactory(), statusMsg, doneMsg) })
     }
 
-    function _runPanelCmd(args, statusMsg) {
-        if (PXLABSRunner.running) {
-            if (QGroundControl.loadGlobalSetting("pxlabs_bg_active", "0") === "1") {
-                // Background poll running — abort it and retry automatically
-                _panelRetryArgs   = args
-                _panelRetryStatus = statusMsg
-                _panelStatus      = "Waiting…"
-                PXLABSRunner.abort()
-                _panelRetryTimer.start()
-            } else {
-                _panelStatus = "⚠ Busy — retry in a moment"
-            }
-            return
-        }
-        _panelStatus    = statusMsg
-        _panelCmdActive = true
-        _lastPanelCmd   = args
-        PXLABSRunner.run(args)
+    // Wire a facade request to the panel status line. doneMsg (optional) is
+    // shown on success before the status auto-clears.
+    function _runPanelCmd(req, statusMsg, doneMsg) {
+        _panelStatus = statusMsg
+        _panelBusy   = true
+        req.outputChanged.connect(function() {
+            var t = req.output.trim()
+            if (t.length > 0) _root._panelStatus = t
+        })
+        req.succeeded.connect(function() {
+            if (doneMsg) _root._panelStatus = doneMsg
+            _panelStatusClearTimer.restart()
+        })
+        req.failed.connect(function(errorText) { _root._panelStatus = "✗ Error: " + errorText })
+        req.completeChanged.connect(function() { if (req.complete) _root._panelBusy = false })
+        return req
     }
 
+    // Background poll of relay WFB mode → parse SA/CA into _wfbMode.
     function _checkWfbMode() {
-        if (PXLABSRunner.running) return
-        _wfbInitFetched  = true
-        _wfbStatusFetch  = true
-        PXLABSRunner.run("relay wfb refresh")   // outputs SA:active/inactive, CA:active/inactive
-    }
-
-    // -----------------------------------------------------------------------
-    // Runner output routing
-    // -----------------------------------------------------------------------
-    Connections {
-        target: PXLABSRunner
-
-        function onOutputReady(text) {
-            if (_wfbStatusFetch) {
-                var saMatch = text.match(/^SA:(\S+)/m)
-                var caMatch = text.match(/^CA:(\S+)/m)
-                if (saMatch && caMatch) {
-                    var sa = saMatch[1]
-                    var ca = caMatch[1]
-                    var newMode = ""
-                    if (sa === "active" && ca !== "active")       newMode = "standalone"
-                    else if (ca === "active" && sa !== "active")  newMode = "cluster"
-                    else if (sa === "active" && ca === "active")  newMode = "standalone"
-                    if (newMode !== "") {
-                        _root._wfbMode = newMode
-                    }
-                }
-                return
+        if (_wfbStatusFetch) return
+        _wfbInitFetched = true
+        _wfbStatusFetch = true
+        var req = Pxlabs.relay.wfbRefresh(true)   // background; outputs SA:.../CA:...
+        req.outputChanged.connect(function() {
+            var saMatch = req.output.match(/^SA:(\S+)/m)
+            var caMatch = req.output.match(/^CA:(\S+)/m)
+            if (saMatch && caMatch) {
+                var sa = saMatch[1]
+                var ca = caMatch[1]
+                var newMode = ""
+                if (sa === "active" && ca !== "active")       newMode = "standalone"
+                else if (ca === "active" && sa !== "active")  newMode = "cluster"
+                else if (sa === "active" && ca === "active")  newMode = "standalone"
+                if (newMode !== "") _root._wfbMode = newMode
             }
-            if (_panelCmdActive) {
-                const t = text.trim()
-                if (t.length > 0) _panelStatus = t
-            }
-        }
-
-        function onCommandFinished(exitCode) {
-            if (_wfbStatusFetch) {
-                _wfbStatusFetch = false
-                return
-            }
-            if (_panelCmdActive) {
-                _panelCmdActive = false
-                if (exitCode !== 0) {
-                    _panelStatus = "✗ Failed (exit " + exitCode + ")"
-                } else {
-                    if (_root._lastPanelCmd.indexOf("ssh-terminal") >= 0)
-                        _panelStatus = "✓ Terminal opened"
-                    else if (_root._lastPanelCmd.indexOf("shutdown") >= 0)
-                        _panelStatus = "✓ Shutdown command sent"
-                    else if (_root._lastPanelCmd.indexOf("reboot") >= 0)
-                        _panelStatus = "✓ Reboot command sent"
-                    _panelStatusClearTimer.restart()
-                }
-            }
-        }
-
-        function onCommandFailed(errorText) {
-            if (_wfbStatusFetch) {
-                _wfbStatusFetch = false
-                return
-            }
-            if (_panelCmdActive) {
-                _panelCmdActive = false
-                _panelStatus = "✗ Error: " + errorText
-            }
-        }
+        })
+        req.completeChanged.connect(function() { if (req.complete) _root._wfbStatusFetch = false })
     }
 
     // -----------------------------------------------------------------------
@@ -429,7 +365,7 @@ Item {
                             QGCLabel { text: "↺"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize+1; font.bold: true }
                             QGCLabel { text: "Restart Companion"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true } }
                         MouseArea { id: cmpRstMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: _confirm("Companion Restart","Reboot companion now?","companion reboot","Restarting companion…") }
+                            onClicked: _confirm("Companion Restart","Reboot companion now?",function(){return Pxlabs.companion.reboot()},"Restarting companion…","✓ Reboot command sent") }
                     }
 
                     // Shutdown Companion
@@ -443,7 +379,7 @@ Item {
                             QGCLabel { text: "⏻"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize+1; font.bold: true }
                             QGCLabel { text: "Shutdown Companion"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true } }
                         MouseArea { id: cmpShtMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: _confirm("Companion Shutdown","Shutdown companion now?","companion shutdown","Shutting down companion…") }
+                            onClicked: _confirm("Companion Shutdown","Shutdown companion now?",function(){return Pxlabs.companion.shutdown()},"Shutting down companion…","✓ Shutdown command sent") }
                     }
 
                     // SSH Companion
@@ -457,7 +393,7 @@ Item {
                             QGCLabel { text: ">_"; color: "#7EEEFF"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true; font.family: "Courier New" }
                             QGCLabel { text: "SSH Companion"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true } }
                         MouseArea { id: cmpSshMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: _runPanelCmd("companion ssh-terminal", "Opening SSH terminal…") }
+                            onClicked: _runPanelCmd(Pxlabs.companion.sshTerminal(), "Opening SSH terminal…", "✓ Terminal opened") }
                     }
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: Qt.rgba(1,1,1,0.08) }
@@ -480,7 +416,7 @@ Item {
                             QGCLabel { text: "↺"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize+1; font.bold: true }
                             QGCLabel { text: "Restart Relay"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true } }
                         MouseArea { id: relRstMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: _confirm("Relay Restart","Reboot relay station now?","relay reboot","Restarting relay…") }
+                            onClicked: _confirm("Relay Restart","Reboot relay station now?",function(){return Pxlabs.relay.reboot()},"Restarting relay…","✓ Reboot command sent") }
                     }
 
                     // Shutdown Relay
@@ -494,7 +430,7 @@ Item {
                             QGCLabel { text: "⏻"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize+1; font.bold: true }
                             QGCLabel { text: "Shutdown Relay"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true } }
                         MouseArea { id: relShtMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: _confirm("Relay Shutdown","Shutdown relay station now?","relay shutdown","Shutting down relay…") }
+                            onClicked: _confirm("Relay Shutdown","Shutdown relay station now?",function(){return Pxlabs.relay.shutdown()},"Shutting down relay…","✓ Shutdown command sent") }
                     }
 
                     // SSH Relay
@@ -508,7 +444,7 @@ Item {
                             QGCLabel { text: ">_"; color: "#7EEEFF"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true; font.family: "Courier New" }
                             QGCLabel { text: "SSH Relay"; color: "white"; font.pointSize: ScreenTools.smallFontPointSize; font.bold: true } }
                         MouseArea { id: relSshMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: _runPanelCmd("relay ssh-terminal", "Opening SSH terminal…") }
+                            onClicked: _runPanelCmd(Pxlabs.relay.sshTerminal(), "Opening SSH terminal…", "✓ Terminal opened") }
                     }
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: Qt.rgba(1,1,1,0.08) }
@@ -552,7 +488,7 @@ Item {
                             }
                             MouseArea { id: wfbSaMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    _runPanelCmd("relay wfb switch --mode standalone", "Switching to Standalone…")
+                                    _runPanelCmd(Pxlabs.relay.wfbSwitch("standalone"), "Switching to Standalone…")
                                     wfbCheckTimer.restart()
                                 }
                             }
@@ -574,7 +510,7 @@ Item {
                             }
                             MouseArea { id: wfbClMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    _runPanelCmd("relay wfb switch --mode cluster", "Switching to Cluster…")
+                                    _runPanelCmd(Pxlabs.relay.wfbSwitch("cluster"), "Switching to Cluster…")
                                     wfbCheckTimer.restart()
                                 }
                             }
@@ -585,9 +521,9 @@ Item {
 
                     // ── Status ──────────────────────────────────────────
                     QGCLabel {
-                        visible: _panelCmdActive || _panelStatus !== ""
-                        text:    _panelCmdActive ? "Running…" : _panelStatus
-                        color:   _panelCmdActive ? QGroundControl.globalPalette.colorOrange :
+                        visible: _panelBusy || _panelStatus !== ""
+                        text:    _panelBusy ? "Running…" : _panelStatus
+                        color:   _panelBusy ? QGroundControl.globalPalette.colorOrange :
                                  _panelStatus.startsWith("✓") ? "#5AD65A" : "#FF7070"
                         font.pointSize: ScreenTools.smallFontPointSize
                         Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter
@@ -807,7 +743,7 @@ Item {
                     border.color: Qt.rgba(0.1,0.8,0.9,0.4); border.width: 1
                     QGCLabel { anchors.centerIn:parent; text:"F-SW"; color:"white"; font.pointSize:ScreenTools.smallFontPointSize; font.bold:true }
                     MouseArea { id:fMa; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
-                        onClicked: PXLABSRunner.run("companion front-switch") } }
+                        onClicked: _runPanelCmd(Pxlabs.companion.switchCamera("front"), "Switching to front…", "✓ Front camera") } }
                 Rectangle { Layout.fillWidth: true; height: _camBtnH; radius: 4
                     gradient: Gradient { orientation: Gradient.Horizontal
                         GradientStop { position:0.0; color:bMa.pressed?"#1DC5D8":bMa.containsMouse?"#17A0B0":"#0C6070" }
@@ -815,7 +751,7 @@ Item {
                     border.color: Qt.rgba(0.1,0.8,0.9,0.4); border.width: 1
                     QGCLabel { anchors.centerIn:parent; text:"B-SW"; color:"white"; font.pointSize:ScreenTools.smallFontPointSize; font.bold:true }
                     MouseArea { id:bMa; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
-                        onClicked: PXLABSRunner.run("companion bottom-switch") } }
+                        onClicked: _runPanelCmd(Pxlabs.companion.switchCamera("bottom"), "Switching to bottom…", "✓ Bottom camera") } }
             }
 
             // Row 2: Split
@@ -827,7 +763,7 @@ Item {
                     border.color: Qt.rgba(0.1,0.9,0.7,0.4); border.width: 1
                     QGCLabel { anchors.centerIn:parent; text:"F/B-SW"; color:"white"; font.pointSize:ScreenTools.smallFontPointSize; font.bold:true }
                     MouseArea { id:sfbMa; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
-                        onClicked: PXLABSRunner.run("companion split-front-bottom") } }
+                        onClicked: _runPanelCmd(Pxlabs.companion.switchCamera("split-fb"), "Switching to split F/B…", "✓ Split front/bottom") } }
                 Rectangle { Layout.fillWidth: true; height: _camBtnH; radius: 4
                     gradient: Gradient { orientation: Gradient.Horizontal
                         GradientStop { position:0.0; color:sbfMa.pressed?"#22B8A0":sbfMa.containsMouse?"#1A9880":"#0E6050" }
@@ -835,7 +771,7 @@ Item {
                     border.color: Qt.rgba(0.1,0.9,0.7,0.4); border.width: 1
                     QGCLabel { anchors.centerIn:parent; text:"B/F-SW"; color:"white"; font.pointSize:ScreenTools.smallFontPointSize; font.bold:true }
                     MouseArea { id:sbfMa; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
-                        onClicked: PXLABSRunner.run("companion split-bottom-front") } }
+                        onClicked: _runPanelCmd(Pxlabs.companion.switchCamera("split-bf"), "Switching to split B/F…", "✓ Split bottom/front") } }
             }
         }
     }

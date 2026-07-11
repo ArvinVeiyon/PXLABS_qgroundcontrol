@@ -17,20 +17,14 @@ SettingsPage {
 
     property bool _busy: false   // own commands only — not global runner state
 
-    // Keep output area updated
-    Connections {
-        target: PXLABSRunner
-        function onOutputReady(text)         { if (_busy) outputArea.text = text }
-        function onCommandFinished(exitCode) {
-            if (!_busy) return
-            _busy = false
-            if (exitCode !== 0) outputArea.text += qsTr("\n[Exit code: %1]").arg(exitCode)
-        }
-        function onCommandFailed(errorText)  {
-            if (!_busy) return
-            _busy = false
-            outputArea.text = qsTr("ERROR: ") + errorText
-        }
+    // Dispatch a facade request and route its correlated output to this panel.
+    function _dispatch(req) {
+        _busy = true
+        outputArea.text = ""
+        req.outputChanged.connect(function() { outputArea.text = req.output })
+        req.succeeded.connect(function(exitCode) { _busy = false })
+        req.failed.connect(function(errorText)   { _busy = false; outputArea.text = qsTr("ERROR: ") + errorText })
+        return req
     }
 
     // -----------------------------------------------------------------------
@@ -49,13 +43,13 @@ SettingsPage {
             QGCTextField {
                 id:               pythonField
                 Layout.fillWidth: true
-                text:             PXLABSRunner.pythonPath
+                text:             Pxlabs.pythonPath
                 placeholderText:  qsTr("python")
             }
 
             QGCButton {
                 text:      qsTr("Save")
-                onClicked: PXLABSRunner.setPythonPath(pythonField.text.trim())
+                onClicked: Pxlabs.setPythonPath(pythonField.text.trim())
             }
         }
 
@@ -68,13 +62,13 @@ SettingsPage {
             QGCTextField {
                 id:               cliField
                 Layout.fillWidth: true
-                text:             PXLABSRunner.cliPath
+                text:             Pxlabs.cliPath
                 placeholderText:  qsTr("<app dir>/tools/pxlabs_cli.py")
             }
 
             QGCButton {
                 text:      qsTr("Save")
-                onClicked: PXLABSRunner.setCliPath(cliField.text.trim())
+                onClicked: Pxlabs.setCliPath(cliField.text.trim())
             }
         }
 
@@ -100,21 +94,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Test CLI (config show)")
                 enabled:   !_busy
-                onClicked: {
-                    if (PXLABSRunner.running) {
-                        outputArea.text = qsTr("⚠ Runner busy — please retry in a moment.")
-                        return
-                    }
-                    outputArea.text = ""
-                    _busy = true
-                    PXLABSRunner.run("config show")
-                }
-            }
-
-            QGCButton {
-                text:      qsTr("Abort")
-                enabled:   _busy
-                onClicked: PXLABSRunner.abort()
+                onClicked: _dispatch(Pxlabs.configShow())
             }
 
             QGCLabel {

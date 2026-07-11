@@ -70,6 +70,7 @@
 #include "VehicleComponent.h"
 #include "VideoManager.h"
 #include "PXLABSCommandRunner.h" // PXLABS integration — additive
+#include "PXLABSApi.h"           // PXLABS integration — additive (control-plane API facade)
 
 #ifndef QGC_DISABLE_MAVLINK_INSPECTOR
 #include "MAVLinkInspectorController.h"
@@ -309,6 +310,12 @@ void QGCApplication::init()
     (void) qmlRegisterSingletonType<ShapeFileHelper>("QGroundControl.ShapeFileHelper", 1, 0, "ShapeFileHelper", [](QQmlEngine *, QJSEngine *) { return new ShapeFileHelper(); });
     // PXLABS integration — additive singleton
     (void) qmlRegisterSingletonType<PXLABSCommandRunner>("QGroundControl.PXLABS", 1, 0, "PXLABSRunner", [](QQmlEngine *, QJSEngine *) { return new PXLABSCommandRunner(); });
+    // PXLABS control-plane API facade (Pxlabs) + its returned/typed helper objects
+    (void) qmlRegisterSingletonType<PXLABSApi>("QGroundControl.PXLABS", 1, 0, "Pxlabs", [](QQmlEngine *, QJSEngine *) { return new PXLABSApi(); });
+    qmlRegisterUncreatableType<PXLABSRequest>      ("QGroundControl.PXLABS", 1, 0, "PXLABSRequest",       QStringLiteral("Returned by the Pxlabs API"));
+    qmlRegisterUncreatableType<PXLABSNode>         ("QGroundControl.PXLABS", 1, 0, "PXLABSNode",          QStringLiteral("Accessed via Pxlabs.companion / Pxlabs.relay"));
+    qmlRegisterUncreatableType<PXLABSCompanionNode>("QGroundControl.PXLABS", 1, 0, "PXLABSCompanionNode", QStringLiteral("Accessed via Pxlabs.companion"));
+    qmlRegisterUncreatableType<PXLABSRelayNode>    ("QGroundControl.PXLABS", 1, 0, "PXLABSRelayNode",     QStringLiteral("Accessed via Pxlabs.relay"));
     // end PXLABS
 
     qmlRegisterSingletonType<QGCMAVLink>("MAVLink", 1, 0, "MAVLink", mavlinkSingletonFactory);
