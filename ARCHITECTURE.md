@@ -42,7 +42,7 @@ graph TB
     subgraph DRN["🚁  Vind-Roz — Companion Computer  ·  RPi5 8GB · Ubuntu 24.04"]
         direction LR
         subgraph DRN_HW["Hardware"]
-            PIX["Pixhawk 6X-RT\nPX4 v1.16.0-rc1\nNXP i.MX RT1176"]
+            PIX["Pixhawk 6X-RT\nPX4 v1.17.0\nNXP i.MX RT1176"]
             CAM["Cameras\n/dev/video0  Front\n/dev/video2  Bottom\n/dev/video3  Opt. Flow"]
             RFDRN["WFB RF Card\nrtl88x2eu · 10.5.5.87"]
         end
@@ -70,7 +70,7 @@ graph TB
     P2P     --- CPE
 
     %% WFB RF link (air)
-    RFGS    <-->|"5 GHz ch157 · MCS1 · 20 MHz\nMAVLink + H.264 video + SSH tunnel"| RFDRN
+    RFGS    <-->|"5 GHz ch161 · MCS1 · 20 MHz\nMAVLink + H.264 video + SSH tunnel"| RFDRN
 
     %% Drone side
     RFDRN   --- WFBD
@@ -93,7 +93,8 @@ Pixhawk ──/dev/ttyAMA0:921600──► mavlink.router (companion)
     └──► WFB-NG drone (stream 0x10/0x90)
          └──► WFB-NG gs  (stream 0x90/0x10)
               └──► mavlink.router (relay) :14560
-                   └──► G-Control.exe UDP :14550
+                   ├──► G-Control.exe UDP :14550
+                   └──► antenna tracker UDP :14551
 ```
 
 ### Video (H.264 downlink)
@@ -126,7 +127,7 @@ pxlabs_cli.exe  SSH :22
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `wifi_channel` | 157 | 5 GHz |
+| `wifi_channel` | 161 | 5 GHz (updated from 157 in companion v1.0.8, 2026-04-17; verified live both sides 2026-07-10) |
 | `wifi_region` | `BO` | Higher TX power allowed |
 | `wifi_txpower` | 3000 (30 dBm × 100) | rtl8812eu |
 | `mcs_index` | 1 | BPSK 1/2 — ~7 Mbps, robust |
@@ -166,8 +167,10 @@ pxlabs_cli.exe  SSH :22
 | `wifibroadcast@drone` | WFB-NG drone side — video TX, MAVLink + tunnel bidirectional |
 | `mavlink.router` | /dev/ttyAMA0:921600 ↔ WFB MAVLink peer |
 | `microxrce-agent` | /dev/ttyAMA4:921600 ↔ ROS2 DDS bridge |
+| `ros2_px4_translation_node` | PX4 ↔ ROS2 message translation (`/fmu/in/*` ↔ `/fmu/out/*`) |
 | `vision_streaming` | ROS2 node (`vision_streaming_node`) camera → H264 RTP → WFB video stream |
-| `rc_control_node` | ROS2 RC input node |
+| `rc_control_node` | ROS2 RC input → camera switch (CH9) + shutdown/reboot |
+| `tfmini.service` | TFmini lidar /dev/ttyAMA2:115200 → `/fmu/in/distance_sensor` |
 | `block-traffic` | Drops ROS2 DDS multicast on drone-wfb (saves WFB bandwidth) |
 | `system_files_sync.timer` | Periodic config sync |
 
