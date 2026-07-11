@@ -87,6 +87,20 @@ exception is **wifi_txpower** (per-side: drone thermal/battery vs ground amp).
 3. Relay clock wrong (no NTP, shows March) — fix someday; makes watchdog logs confusing.
 4. P2P PC↔relay link intermittently degrades (1 s RTT, SSH timeouts) — Bug C territory.
 
+## On-device script — wfb-cfg-apply (source of record)
+
+- Installed at `/usr/local/sbin/wfb-cfg-apply`, **755 root:root**, byte-identical on
+  companion AND relay (verified by fetch+diff 2026-07-12).
+- Reference copy in THIS repo: `tools/reference/wfb-cfg-apply` (pulled from the live
+  devices 2026-07-12 — if the devices and this copy ever disagree, the devices win;
+  re-fetch before editing).
+- Log on device: `/var/log/wfb-cfg-apply.log`. Confirm file: `/run/wfb-cfg-confirm`.
+  Backup: `/etc/wifibroadcast.cfg.bak`.
+- **USER TODO (device repos):** add `/usr/local/sbin/wfb-cfg-apply` to the companion
+  and relay config repos + their auto-sync, commit, and tag a new release on both.
+  Do it ON THE DEVICES via the normal gateway flow (companion is the git gateway /
+  relay_git_sync.sh) — NEVER push those repos from the PC.
+
 ## Gotchas (for future changes)
 
 - QGC invokes `tools\pxlabs_cli.exe` (frozen) by DEFAULT, not the .py! After changing

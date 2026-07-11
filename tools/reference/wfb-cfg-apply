@@ -1,0 +1,64 @@
+#!/bin/bash
+# wfb-cfg-apply � safe wifibroadcast.cfg apply with automatic rollback.
+#
+# usage: wfb-cfg-apply <new-cfg-path> [timeout-seconds]
+#
+# 1. Backs up /etc/wifibroadcast.cfg
+# 2. Installs the new config and restarts the active wifibroadcast unit
+# 3. Background watchdog waits for /run/wfb-cfg-confirm (touched by the
+#    ground station once it can reach this device again).
+#    No confirm within the timeout -> restore backup + restart unit.
+#
+# The watchdog survives SSH disconnect (nohup + disown), so even a config
+# that kills the radio link self-heals.
+#
+# Part of PXLABS G-Control. Log: /var/log/wfb-cfg-apply.log
+set -u
+
+NEW="${1:?usage: wfb-cfg-apply <new-cfg-path> [timeout-seconds]}"
+TIMEOUT="${2:-60}"
+CFG=/etc/wifibroadcast.cfg
+BAK=/etc/wifibroadcast.cfg.bak
+CONFIRM=/run/wfb-cfg-confirm
+LOG=/var/log/wfb-cfg-apply.log
+
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+
+[ -f "$NEW" ] || { echo "ERROR: $NEW not found"; exit 1; }
+
+# refuse an obviously-broken config: must contain the core sections
+for sect in common base video; do
+    grep -q "^\[$sect\]" "$NEW" || { echo "ERROR: new cfg missing [$sect] section"; exit 1; }
+done
+
+# Only template INSTANCES in `running` state � this excludes the oneshot
+# wifibroadcast.service wrapper (which sits "active (exited)" in both modes).
+# Works for standalone (wifibroadcast@gs / @drone) and cluster
+# (wifibroadcast-cluster@gs) alike.
+UNIT=$(systemctl list-units 'wifibroadcast@*' 'wifibroadcast-cluster@*' \
+        --state=running --no-legend --plain 2>/dev/null | awk '{print $1}' | head -1)
+# Fallback (service dead, e.g. recovering from a broken cfg): any loaded instance.
+[ -z "$UNIT" ] && UNIT=$(systemctl list-units 'wifibroadcast@*' 'wifibroadcast-cluster@*' \
+        --all --no-legend --plain 2>/dev/null | awk '{print $1}' | head -1)
+[ -z "$UNIT" ] && { echo "ERROR: no wifibroadcast instance unit found"; exit 1; }
+
+cp -a "$CFG" "$BAK" || { echo "ERROR: backup failed"; exit 1; }
+cp "$NEW" "$CFG"    || { cp -a "$BAK" "$CFG"; echo "ERROR: install failed"; exit 1; }
+rm -f "$CONFIRM"
+log "APPLY start unit=$UNIT timeout=${TIMEOUT}s src=$NEW"
+
+systemctl restart "$UNIT"
+
+nohup bash -c "
+  for i in \$(seq 1 $TIMEOUT); do
+    [ -f $CONFIRM ] && { echo \"\$(date '+%F %T') CONFIRMED � keeping new cfg\" >> $LOG; exit 0; }
+    sleep 1
+  done
+  echo \"\$(date '+%F %T') NO CONFIRM in ${TIMEOUT}s � ROLLING BACK\" >> $LOG
+  cp -a $BAK $CFG
+  systemctl restart $UNIT
+" >/dev/null 2>&1 &
+disown
+
+echo "APPLY_STARTED unit=$UNIT timeout=${TIMEOUT}s"
+exit 0
