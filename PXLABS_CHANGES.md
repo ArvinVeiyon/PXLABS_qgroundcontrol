@@ -10,15 +10,16 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 
 | Version | Tag | Branch | Date | Status |
 |---------|-----|--------|------|--------|
-| v3.0.0 | `PXLABS-v3.0.0` | `release/PXLABS-v3.0` | 2026-06-14 | ✅ Latest — relay services panel fix (per-target lists + bash parsing fix), FlyView shutdown/reboot acknowledgement, camera resolution/FPS/format dropdowns |
+| v3.1.0 | `PXLABS-v3.1.0` | `PXLABS-integration` | 2026-07-11 | ✅ Latest — control-plane API facade (`Pxlabs` + `PXLABSCommandBus`): queued command bus with request correlation + Interactive-preempts-Background priority. Closes A1 (shared-runner contention), B1 (camera quick-buttons no longer silently dropped), B5 (QStringList args, no space-splitting). B4 partial (QGC side no longer shells). Removes the `pxlabs_bg_active` on-disk mutex, retry timers, flag-routing, Abort buttons across all 6 QML panels. cmake/Git.cmake version-parse fix. Legacy `PXLABSCommandRunner` kept for rollback |
+| v3.0.0 | `PXLABS-v3.0.0` | `release/PXLABS-v3.0` | 2026-06-14 | Previous stable — relay services panel fix (per-target lists + bash parsing fix), FlyView shutdown/reboot acknowledgement, camera resolution/FPS/format dropdowns |
 | v2.2.1 | `PXLABS-v2.2.1` | `PXLABS-integration` | 2026-06-04 | Previous stable — CLI shutdown/ssh-terminal fixes, NSIS 3.11 compat, FlyView panel responsiveness |
 | v2.2.0 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | 2026-03-22 | Previous stable |
 | v2.1.0 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | 2026-03-20 | Previous stable |
 
-### Installer (v3.0.0 — latest)
+### Installer (v3.1.0 — latest)
 
-`G-Control-Setup-v3.0.0.exe` at `installer\G-Control-Setup-v3.0.0.exe` (~117 MB, LZMA compressed).
-Previous: `G-Control-Setup-v2.2.1.exe` (tag `PXLABS-v2.2.1`), `G-Control-Setup-v2.2.0.exe` (tag `PXLABS-v2.2.0`).
+`G-Control-Setup-v3.1.0.exe` at `installer\G-Control-Setup-v3.1.0.exe` (~117 MB, LZMA compressed).
+Previous: `G-Control-Setup-v3.0.0.exe` (tag `PXLABS-v3.0.0`), `G-Control-Setup-v2.2.1.exe` (tag `PXLABS-v2.2.1`), `G-Control-Setup-v2.2.0.exe` (tag `PXLABS-v2.2.0`).
 
 - Installs to `C:\Program Files\G-Control\`
 - Bundles `pxlabs_cli.exe` — no Python required on target machine
@@ -38,9 +39,11 @@ Previous: `G-Control-Setup-v2.2.1.exe` (tag `PXLABS-v2.2.1`), `G-Control-Setup-v
 ### 1. `src/QGCApplication.cc`
 - **Line added (~72):** `#include "PXLABSCommandRunner.h"`
 - **Lines added (~310):** `qmlRegisterSingletonType<PXLABSCommandRunner>(...)` — registers `PXLABSRunner` singleton to QML URI `QGroundControl.PXLABS`
+- **(v3.1.0) Lines added:** `#include "PXLABSApi.h"` + register the `Pxlabs` singleton facade to `QGroundControl.PXLABS` (legacy `PXLABSRunner` left registered for rollback)
 
 ### 2. `src/Utilities/CMakeLists.txt`
 - **Lines added:** `PXLABSCommandRunner.cc` and `PXLABSCommandRunner.h` added to `target_sources`
+- **(v3.1.0) Lines added:** `PXLABSApi.{cc,h}` and `PXLABSCommandBus.{cc,h}` added to `target_sources`
 
 ### 3. `src/UI/AppSettings/CMakeLists.txt`
 - **Lines added:** `ConnectionControl.qml`, `PXLABSSettings.qml`, `CompanionControl.qml`, `RelayControl.qml` added to `QML_FILES`
@@ -87,7 +90,9 @@ Previous: `G-Control-Setup-v2.2.1.exe` (tag `PXLABS-v2.2.1`), `G-Control-Setup-v
 
 | File | Purpose |
 |------|---------|
-| `src/Utilities/PXLABSCommandRunner.h` | C++ QObject — QProcess wrapper, exposes `PXLABSRunner` singleton to QML |
+| `src/Utilities/PXLABSApi.h` / `.cc` | **(v3.1.0)** `Pxlabs` singleton facade + `PXLABSCompanionNode` / `PXLABSRelayNode`. QML calls typed operations instead of a shared runner |
+| `src/Utilities/PXLABSCommandBus.h` / `.cc` | **(v3.1.0)** Queued command engine + `PXLABSRequest` correlation object. `enqueue()` never rejects (returns a request); per-request signals; Interactive priority preempts a running Background poll; Background polls coalesce; args passed as `QStringList` (no shell) |
+| `src/Utilities/PXLABSCommandRunner.h` | C++ QObject — QProcess wrapper, exposes `PXLABSRunner` singleton to QML. **(v3.1.0: superseded by the `Pxlabs` facade; kept registered for rollback)** |
 | `src/Utilities/PXLABSCommandRunner.cc` | Implementation — runs `pxlabs_cli.exe <args>` (installed) or `python pxlabs_cli.py <args>` (dev); auto-detected by `.exe` extension |
 | `src/UI/AppSettings/ConnectionControl.qml` | **Settings page — SSH config for companion + relay. CONFIGURE FIRST before using CLI. Also: Periodic Connection Check settings + Wi-Fi Temperature Polling settings.** |
 | `src/UI/AppSettings/PXLABSSettings.qml` | Settings page — Python path, CLI path, Test CLI |

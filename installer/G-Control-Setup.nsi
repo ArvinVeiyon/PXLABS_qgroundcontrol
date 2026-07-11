@@ -1,10 +1,10 @@
 ; G-Control Setup — NSIS Installer Script
-; Builds G-Control-Setup-v3.0.0.exe
+; Builds G-Control-Setup-v3.1.0.exe
 ; Requirements: NSIS 3.x  (makensis.exe in PATH or at default install location)
 ; Run: makensis G-Control-Setup.nsi  (from installer\ directory)
 
 !define APP_NAME        "G-Control"
-!define APP_VERSION     "3.0.0"
+!define APP_VERSION     "3.1.0"
 !define APP_PUBLISHER   "PXLABS"
 !define APP_EXE         "G-Control.exe"
 !define INSTALL_DIR     "$PROGRAMFILES64\G-Control"

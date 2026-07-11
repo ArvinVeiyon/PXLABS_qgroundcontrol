@@ -19,7 +19,7 @@ Full network, data-flow, and software architecture for the Vind-Roz drone system
 ```mermaid
 graph TB
     subgraph PC["🖥️  Windows PC · 10.5.6.50"]
-        GC["G-Control.exe\n──────────────────\nQGC PXLABS v2.2.0\nQt6 · GStreamer 1.22"]
+        GC["G-Control.exe\n──────────────────\nQGC PXLABS v3.1.0\nQt6 · GStreamer 1.22"]
         CLI["pxlabs_cli.exe\n──────────────────\nSSH command bridge"]
     end
 
@@ -99,7 +99,7 @@ Pixhawk ──/dev/ttyAMA0:921600──► mavlink.router (companion)
 ### Video (H.264 downlink)
 ```
 Camera /dev/video0 or /dev/video2
-    └──► vision_streaming (FFmpeg H264 RTP → 127.0.0.1:5602)
+    └──► vision_streaming (ROS2 node, H264 RTP → 127.0.0.1:5602)
          └──► WFB-NG drone (stream 0x00, FEC k=8 n=12)
               └──► WFB-NG gs
                    └──► G-Control.exe UDP :5600 → GStreamer display
@@ -155,7 +155,7 @@ pxlabs_cli.exe  SSH :22
 | PXLABS UI | `FlyViewCustomLayer.qml` — System Control panel |
 | Toolbar | `FlyViewToolBar.qml` — Air-TX temp chip, Comp/Relay status chips |
 | Settings pages | ConnectionControl, PXLABSSettings, CompanionControl, RelayControl |
-| Command bridge | `PXLABSCommandRunner.cc` — QProcess → pxlabs_cli.exe |
+| Command bridge | `PXLABSApi.cc` (`Pxlabs` facade) + `PXLABSCommandBus.cc` (queued engine, request correlation, Interactive-preempts-Background priority) — QProcess → pxlabs_cli.exe. Legacy `PXLABSCommandRunner.cc` retained for rollback |
 | Video decode | GStreamer 1.22.12 — H264 via d3d11h264dec (no gstlibav) |
 | CLI tool | `pxlabs_cli.exe` — PyInstaller-frozen Python, Windows keyring auth |
 
@@ -166,7 +166,7 @@ pxlabs_cli.exe  SSH :22
 | `wifibroadcast@drone` | WFB-NG drone side — video TX, MAVLink + tunnel bidirectional |
 | `mavlink.router` | /dev/ttyAMA0:921600 ↔ WFB MAVLink peer |
 | `microxrce-agent` | /dev/ttyAMA4:921600 ↔ ROS2 DDS bridge |
-| `vision_streaming` | FFmpeg camera → H264 RTP → WFB video stream |
+| `vision_streaming` | ROS2 node (`vision_streaming_node`) camera → H264 RTP → WFB video stream |
 | `rc_control_node` | ROS2 RC input node |
 | `block-traffic` | Drops ROS2 DDS multicast on drone-wfb (saves WFB bandwidth) |
 | `system_files_sync.timer` | Periodic config sync |
