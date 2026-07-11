@@ -130,7 +130,7 @@ Camera device names are **stable** via udev — always `/dev/video0` and `/dev/v
 │  Vind-Rly (Relay Station — 10.5.6.101 P2P / 10.5.5.77 WFB tunnel)     │
 │                                                                          │
 │  wifibroadcast@gs                                                        │
-│    ├─ video stream  ◄── WFB-NG rx (wlx00c0cab6db3b, ch157) ──► :5600   │
+│    ├─ video stream  ◄── WFB-NG rx (wlx00c0cab6db3b, ch161) ──► :5600   │
 │    ├─ mavlink       ◄──► WFB-NG    ──► local mavlink-router :14560      │
 │    └─ tunnel        ◄──► WFB-NG    ──► gs-wfb (10.5.5.77)             │
 │                                                                          │
@@ -141,7 +141,7 @@ Camera device names are **stable** via udev — always `/dev/video0` and `/dev/v
 │                                                                          │
 │  ssh-tunnel:  0.0.0.0:2222  ──────────────────► 10.5.5.87:22           │
 └────────────────────────┬────────────────────────────────────────────────┘
-                         │  WFB-NG RF link  (5 GHz ch157, MCS1, 20 MHz)
+                         │  WFB-NG RF link  (5 GHz ch161, MCS1, 20 MHz)
                          │  rtl8812eu ◄──────────────────► rtl88x2eu
 ┌────────────────────────▼────────────────────────────────────────────────┐
 │  Vind-Roz (Companion — 10.5.5.87 WFB / 10.5.5.87:22 SSH)              │
@@ -177,7 +177,7 @@ Both drone and relay use `/etc/wifibroadcast.cfg`. Key parameters:
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `wifi_channel` | 157 | 5 GHz |
+| `wifi_channel` | 161 | 5 GHz (updated from 157, verified live both sides 2026-07-10) |
 | `wifi_region` | `BO` | Allows higher TX power |
 | `wifi_txpower` | 3000 (= 30 dBm × 100) | rtl8812eu |
 | `mcs_index` | 1 | BPSK 1/2 — robust, ~7 Mbps |
