@@ -71,6 +71,7 @@
 #include "VideoManager.h"
 #include "PXLABSCommandRunner.h" // PXLABS integration — additive
 #include "PXLABSApi.h"           // PXLABS integration — additive (control-plane API facade)
+#include "PXLABSLinkMonitor.h"   // PXLABS integration — additive (WFB link health chip)
 
 #ifndef QGC_DISABLE_MAVLINK_INSPECTOR
 #include "MAVLinkInspectorController.h"
@@ -316,6 +317,8 @@ void QGCApplication::init()
     qmlRegisterUncreatableType<PXLABSNode>         ("QGroundControl.PXLABS", 1, 0, "PXLABSNode",          QStringLiteral("Accessed via Pxlabs.companion / Pxlabs.relay"));
     qmlRegisterUncreatableType<PXLABSCompanionNode>("QGroundControl.PXLABS", 1, 0, "PXLABSCompanionNode", QStringLiteral("Accessed via Pxlabs.companion"));
     qmlRegisterUncreatableType<PXLABSRelayNode>    ("QGroundControl.PXLABS", 1, 0, "PXLABSRelayNode",     QStringLiteral("Accessed via Pxlabs.relay"));
+    // PXLABS live WFB link health (toolbar chip) — direct TCP to the relay 8103 JSON feed
+    (void) qmlRegisterSingletonType<PXLABSLinkMonitor>("QGroundControl.PXLABS", 1, 0, "PxlabsLink", [](QQmlEngine *, QJSEngine *) { return new PXLABSLinkMonitor(); });
     // end PXLABS
 
     qmlRegisterSingletonType<QGCMAVLink>("MAVLink", 1, 0, "MAVLink", mavlinkSingletonFactory);

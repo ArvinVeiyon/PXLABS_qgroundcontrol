@@ -189,6 +189,94 @@ Rectangle {
     }
 
     //-------------------------------------------------------------------------
+    //-- PXLABS: AIR + WFB LINK chips (left of the Comp/Relay chip). Live values
+    //-- from the PxlabsLink TCP client; clicking either opens the standalone
+    //-- PyQt WFB Link Monitor (deep-dive window, future antenna-tracker control).
+
+    Rectangle {
+        id:                     pxAirChip
+        z:                      20
+        anchors.right:          pxWfbLinkChip.left
+        anchors.rightMargin:    ScreenTools.defaultFontPixelWidth * 0.6
+        anchors.verticalCenter: parent.verticalCenter
+        height:                 ScreenTools.defaultFontPixelHeight * 2.0
+        width:                  pxAirRow.implicitWidth + ScreenTools.defaultFontPixelWidth * 2.4
+        radius:                 height * 0.3
+        color:                  qgcPal.toolbarBackground
+        border.color:           qgcPal.text
+        border.width:           1
+        opacity:                0.92
+
+        RowLayout {
+            id:               pxAirRow
+            anchors.centerIn: parent
+            spacing:          ScreenTools.defaultFontPixelWidth * 0.3
+
+            QGCLabel {
+                text:           "●"
+                font.pointSize: ScreenTools.defaultFontPointSize
+                color:          !PxlabsLink.live || PxlabsLink.airPct < 0 ? qgcPal.colorGrey :
+                                PxlabsLink.airPct > 85                    ? qgcPal.colorRed  :
+                                PxlabsLink.airPct > 60                    ? qgcPal.colorOrange : qgcPal.colorGreen
+            }
+            QGCLabel {
+                text:           PxlabsLink.live && PxlabsLink.airPct >= 0
+                                ? qsTr("AIR %1%").arg(PxlabsLink.airPct) : qsTr("AIR ––")
+                color:          qgcPal.text
+                font.pointSize: ScreenTools.defaultFontPointSize
+                font.bold:      true
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape:  Qt.PointingHandCursor
+            onClicked:    PxlabsLink.launchMonitorApp()
+        }
+    }
+
+    Rectangle {
+        id:                     pxWfbLinkChip
+        z:                      20
+        anchors.right:          pxConnChip.left
+        anchors.rightMargin:    ScreenTools.defaultFontPixelWidth * 0.6
+        anchors.verticalCenter: parent.verticalCenter
+        height:                 ScreenTools.defaultFontPixelHeight * 2.0
+        width:                  pxWfbLinkRow.implicitWidth + ScreenTools.defaultFontPixelWidth * 2.4
+        radius:                 height * 0.3
+        color:                  qgcPal.toolbarBackground
+        border.color:           qgcPal.text
+        border.width:           1
+        opacity:                0.92
+
+        RowLayout {
+            id:               pxWfbLinkRow
+            anchors.centerIn: parent
+            spacing:          ScreenTools.defaultFontPixelWidth * 0.3
+
+            QGCLabel {
+                text:           "●"
+                font.pointSize: ScreenTools.defaultFontPointSize
+                color:          PxlabsLink.state === "GOOD" ? qgcPal.colorGreen  :
+                                PxlabsLink.state === "WARN" ? qgcPal.colorOrange :
+                                PxlabsLink.state === "CRIT" ? qgcPal.colorRed    : qgcPal.colorGrey
+            }
+            QGCLabel {
+                text:           PxlabsLink.live ? qsTr("WFB %1%").arg(PxlabsLink.linkPct) : qsTr("WFB ––")
+                color:          qgcPal.text
+                font.pointSize: ScreenTools.defaultFontPointSize
+                font.bold:      true
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape:  Qt.PointingHandCursor
+            onClicked:    PxlabsLink.launchMonitorApp()
+        }
+    }
+
+    //-------------------------------------------------------------------------
     //-- PXLABS: Connection Status Chip (Companion + Relay, left of Air-TX chip)
     Rectangle {
         id:                     pxConnChip

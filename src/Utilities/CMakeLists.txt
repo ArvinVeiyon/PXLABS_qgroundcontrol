@@ -7,6 +7,8 @@ target_sources(${CMAKE_PROJECT_NAME}
         PXLABSCommandBus.h
         PXLABSApi.cc
         PXLABSApi.h
+        PXLABSLinkMonitor.cc
+        PXLABSLinkMonitor.h
         # end PXLABS
         DeviceInfo.cc
         DeviceInfo.h
