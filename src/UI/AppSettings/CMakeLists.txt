@@ -10,6 +10,7 @@ qt_add_qml_module(AppSettingsModule
         PXLABSSettings.qml
         CompanionControl.qml
         RelayControl.qml
+        WFBConfig.qml
         PXLABSPagesModel.qml
         # end PXLABS
         ADSBServerSettings.qml

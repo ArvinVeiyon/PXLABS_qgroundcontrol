@@ -31,4 +31,11 @@ ListModel {
         iconUrl: "qrc:/InstrumentValueIcons/station.svg"
         pageVisible: function() { return true }
     }
+
+    ListElement {
+        name: qsTr("WFB Config")
+        url: "qrc:/qml/QGroundControl/AppSettings/WFBConfig.qml"
+        iconUrl: "qrc:/InstrumentValueIcons/cog.svg"
+        pageVisible: function() { return true }
+    }
 }

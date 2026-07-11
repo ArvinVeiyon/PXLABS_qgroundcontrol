@@ -151,12 +151,381 @@ def sftp_get(host, port, username, password, remote_path, local_path):
             pass
 
 
+def sftp_put_text(host, port, username, password, text, remote_path):
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        ssh.connect(host, int(port), username, password, timeout=10)
+        sftp = ssh.open_sftp()
+        with sftp.open(remote_path, "w") as f:
+            f.write(text)
+        sftp.close()
+        return True
+    except Exception as e:
+        print(f"ERROR: upload failed: {e}", file=sys.stderr)
+        return False
+    finally:
+        try:
+            ssh.close()
+        except Exception:
+            pass
+
+
 def run_cmd(ok, out, err, exit_status):
     if out:
         print(out.strip(), flush=True)
     if err:
         print(err.strip(), file=sys.stderr, flush=True)
     return 0 if ok else (exit_status if exit_status is not None else 1)
+
+
+# ---------------------------------------------------------------------------
+# WFB config editing (wifibroadcast.cfg on companion/relay)
+# ---------------------------------------------------------------------------
+WFB_CFG_PATH     = "/etc/wifibroadcast.cfg"
+WFB_CFG_DEFAULT  = "/etc/wifibroadcast.cfg.default"
+WFB_CFG_APPLY    = "/usr/local/sbin/wfb-cfg-apply"
+WFB_CFG_CONFIRM  = "/run/wfb-cfg-confirm"
+
+# TIER1: safe to change one side; monitor-mode RX adapts (TX announces per session/packet).
+# TIER2: MUST match both ends — mismatch permanently kills the link. Gated.
+WFB_TIER1 = {
+    "common.wifi_txpower": (100, 3000),
+    "base.mcs_index":      (0, 7),
+    "base.stbc":           (0, 1),
+    "base.ldpc":           (0, 1),
+    "video.fec_k":         (1, 12),
+    "video.fec_n":         (2, 16),
+    "mavlink.fec_k":       (1, 12),
+    "mavlink.fec_n":       (2, 16),
+    "tunnel.fec_k":        (1, 12),
+    "tunnel.fec_n":        (2, 16),
+}
+WFB_TIER2 = {
+    "common.wifi_channel": (1, 177),
+    "base.bandwidth":      (20, 40),
+}
+WFB_ALL_PARAMS = {**WFB_TIER1, **WFB_TIER2}
+
+
+def _wfb_target_conn(target, cfg):
+    """(host, port, username, password) for companion or relay."""
+    if target == "relay":
+        user = cfg.get("relay_username", "vind-admin")
+        return (cfg.get("relay_ip"), cfg.get("relay_ssh_port", "22"),
+                user, get_password(user, "PXLABS_RELAY_PASSWORD"))
+    ip, port = pick_companion_host(cfg)
+    user = cfg.get("username", "roz")
+    return ip, port, user, get_password(user, "PXLABS_COMPANION_PASSWORD")
+
+
+def _wfb_parse_params(spec):
+    """'base.mcs_index=2,video.fec_k=8' -> {(section, key): int_value}; validates."""
+    out = {}
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part or "." not in part.split("=", 1)[0]:
+            raise ValueError(f"bad param '{part}' (expected section.key=value)")
+        name, val = part.split("=", 1)
+        name = name.strip()
+        if name not in WFB_ALL_PARAMS:
+            raise ValueError(f"unknown/blocked param '{name}' "
+                             f"(allowed: {', '.join(sorted(WFB_ALL_PARAMS))})")
+        try:
+            ival = int(val.strip())
+        except ValueError:
+            raise ValueError(f"{name}: value must be an integer")
+        lo, hi = WFB_ALL_PARAMS[name]
+        if not lo <= ival <= hi:
+            raise ValueError(f"{name}: {ival} out of range [{lo}..{hi}]")
+        if name == "base.bandwidth" and ival not in (20, 40):
+            raise ValueError("base.bandwidth must be 20 or 40")
+        section, key = name.split(".", 1)
+        out[(section, key)] = ival
+    if not out:
+        raise ValueError("no parameters given")
+    # cross-check FEC sanity: n > k whenever both are set
+    for stream in ("video", "mavlink", "tunnel"):
+        k = out.get((stream, "fec_k"))
+        n = out.get((stream, "fec_n"))
+        if k is not None and n is not None and n <= k:
+            raise ValueError(f"{stream}: fec_n ({n}) must be > fec_k ({k})")
+    return out
+
+
+def _wfb_cfg_edit(text, edits):
+    """Apply {(section,key): value} edits to cfg text; error if a key is missing."""
+    lines = text.splitlines()
+    cur = None
+    pending = dict(edits)
+    for i, line in enumerate(lines):
+        m = re.match(r"\s*\[(\w+)\]", line)
+        if m:
+            cur = m.group(1)
+            continue
+        for (section, key), val in list(pending.items()):
+            if cur == section and re.match(rf"\s*{re.escape(key)}\s*=", line):
+                cm = re.search(r"(#.*)$", line)
+                comment = f"  {cm.group(1)}" if cm else ""
+                lines[i] = f"{key} = {val}{comment}"
+                del pending[(section, key)]
+    if pending:
+        missing = ", ".join(f"{s}.{k}" for s, k in pending)
+        raise ValueError(f"keys not found in remote cfg: {missing}")
+    return "\n".join(lines) + "\n"
+
+
+def _wfb_extract_params(text):
+    """Print current values of all tunable params as section.key=value lines."""
+    vals = {}
+    cur = None
+    for line in text.splitlines():
+        m = re.match(r"\s*\[(\w+)\]", line)
+        if m:
+            cur = m.group(1)
+            continue
+        m = re.match(r"\s*(\w+)\s*=\s*([^#]+)", line)
+        if m and cur:
+            name = f"{cur}.{m.group(1)}"
+            if name in WFB_ALL_PARAMS:
+                vals[name] = m.group(2).strip()
+    return vals
+
+
+def _wfb_secondary_ok(cfg):
+    sec_ip = cfg.get("secondary_ip")
+    sec_port = cfg.get("secondary_port", "22")
+    return bool(sec_ip) and is_reachable(sec_ip, sec_port, timeout=4)
+
+
+def _wfb_confirm_loop(routes, user, pw, deadline):
+    """Poll (host, port) routes until one accepts an SSH confirm touch, or the
+    deadline passes. Returns True once the watchdog confirm file is touched."""
+    while time.time() < deadline:
+        time.sleep(3)
+        for host, port in routes:
+            if not is_reachable(host, port, timeout=3):
+                continue
+            ok, _o, _e, _s = ssh_exec(host, port, user, pw,
+                                      f"sudo touch {WFB_CFG_CONFIRM}")
+            if ok:
+                return True
+    return False
+
+
+def _wfb_set_both(args, cfg):
+    """Apply the same params to companion FIRST, then relay. Neither end is
+    confirmed until both applied — on any failure no confirm is sent and both
+    watchdogs roll back, so the two configs always end up matching.
+    common.wifi_txpower is per-side by fleet convention and is rejected here."""
+    timeout      = int(args.timeout or 60)   # relay watchdog + confirm window
+    comp_timeout = timeout * 2 + 60          # companion must outlive the relay phase
+
+    try:
+        edits = _wfb_parse_params(args.params)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    if ("common", "wifi_txpower") in edits:
+        print("ERROR: common.wifi_txpower is per-side (drone thermal vs ground amp) — "
+              "use 'set --target', not set-both", file=sys.stderr)
+        return 1
+    danger = [f"{s}.{k}" for (s, k) in edits if f"{s}.{k}" in WFB_TIER2]
+    if danger:
+        if not args.danger_ack:
+            print(f"ERROR: {', '.join(danger)} affects BOTH ends — "
+                  f"requires --danger-ack", file=sys.stderr)
+            return 1
+        if not _wfb_secondary_ok(cfg):
+            print("ERROR: secondary connection to companion not reachable — "
+                  "refusing dangerous change (channel/bandwidth) without a "
+                  "recovery path", file=sys.stderr)
+            return 1
+
+    conns = {"companion": _wfb_target_conn("companion", cfg),
+             "relay":     _wfb_target_conn("relay", cfg)}
+
+    # Read + edit BOTH cfgs up front so a missing key or unreachable side
+    # aborts before anything is touched.
+    new_texts, orig_texts = {}, {}
+    for name in ("companion", "relay"):
+        host, port, user, pw = conns[name]
+        ok, out, err, st = ssh_exec(host, port, user, pw, f"cat {WFB_CFG_PATH}")
+        if not ok:
+            print(f"ERROR: cannot read {name} cfg: {err.strip()}", file=sys.stderr)
+            return 1
+        try:
+            new_texts[name] = _wfb_cfg_edit(out, edits)
+        except ValueError as e:
+            print(f"ERROR ({name}): {e}", file=sys.stderr)
+            return 1
+        orig_texts[name] = out
+
+    def push_apply(name, text, tmo):
+        host, port, user, pw = conns[name]
+        if not sftp_put_text(host, port, user, pw, text, "/tmp/wfb-new.cfg"):
+            return False
+        ok, out, err, st = ssh_exec(host, port, user, pw,
+                                    f"sudo {WFB_CFG_APPLY} /tmp/wfb-new.cfg {tmo}")
+        print(out.strip(), flush=True)
+        if not ok:
+            print(err.strip(), file=sys.stderr, flush=True)
+        return ok
+
+    # Companion confirm routes: primary, plus secondary if configured (during a
+    # channel change the primary only returns after the relay side flips too).
+    chost, cport, cuser, cpw = conns["companion"]
+    comp_routes = [(chost, cport)]
+    sec_ip = cfg.get("secondary_ip")
+    if sec_ip:
+        comp_routes.append((sec_ip, cfg.get("secondary_port", "22")))
+
+    print(f"[1/4] applying to companion (watchdog {comp_timeout}s, unconfirmed)…",
+          flush=True)
+    if not push_apply("companion", new_texts["companion"], comp_timeout):
+        print("ABORTED: companion apply failed — relay untouched, companion "
+              "watchdog restores its previous config", flush=True)
+        return 1
+
+    print(f"[2/4] applying to relay (watchdog {timeout}s)…", flush=True)
+    if not push_apply("relay", new_texts["relay"], timeout):
+        print("ROLLED_BACK: relay apply failed — companion left unconfirmed; its "
+              f"watchdog restores the previous config within {comp_timeout}s, "
+              "ends stay matched", flush=True)
+        return 1
+
+    print("[3/4] waiting for companion, then confirming…", flush=True)
+    if not _wfb_confirm_loop(comp_routes, cuser, cpw,
+                             time.time() + max(timeout - 15, 15)):
+        print("ROLLED_BACK: companion unreachable — neither end confirmed; both "
+              "watchdogs restore the previous configs", flush=True)
+        return 1
+
+    print("[4/4] confirming relay…", flush=True)
+    rhost, rport, ruser, rpw = conns["relay"]
+    ok, _o, _e, _s = ssh_exec(rhost, rport, ruser, rpw,
+                              f"sudo touch {WFB_CFG_CONFIRM}")
+    if ok:
+        print("APPLIED_BOTH (companion + relay confirmed — new config kept)",
+              flush=True)
+        return 0
+
+    # Companion kept the new cfg but the relay will roll back — revert the
+    # companion so the ends match again.
+    print("relay confirm failed (relay rolls back) — reverting companion to the "
+          "previous config…", file=sys.stderr, flush=True)
+    if push_apply("companion", orig_texts["companion"], timeout) and \
+       _wfb_confirm_loop(comp_routes, cuser, cpw,
+                         time.time() + max(timeout - 15, 15)):
+        print("REVERTED: both ends back on the previous config", flush=True)
+        return 1
+    print("MISMATCH_DANGER: relay rolled back but companion may still run the new "
+          "config — verify both wifibroadcast.cfg manually!",
+          file=sys.stderr, flush=True)
+    return 1
+
+
+def wfb_config_actions(args, cfg):
+    action = args.action
+
+    if action == "check-secondary":
+        ok = _wfb_secondary_ok(cfg)
+        print(f"SECONDARY:{'reachable' if ok else 'unreachable'}", flush=True)
+        return 0 if ok else 1
+
+    if action == "set-both":
+        return _wfb_set_both(args, cfg)
+
+    target = args.target
+    if target not in ("companion", "relay"):
+        print("ERROR: --target companion|relay required", file=sys.stderr)
+        return 1
+    host, port, user, pw = _wfb_target_conn(target, cfg)
+
+    if action == "get":
+        ok, out, err, st = ssh_exec(host, port, user, pw, f"cat {WFB_CFG_PATH}")
+        return run_cmd(ok, out, err, st)
+
+    if action == "params":
+        ok, out, err, st = ssh_exec(host, port, user, pw, f"cat {WFB_CFG_PATH}")
+        if not ok:
+            return run_cmd(ok, out, err, st)
+        for name, val in sorted(_wfb_extract_params(out).items()):
+            tier = "TIER2" if name in WFB_TIER2 else "TIER1"
+            print(f"{name}={val} [{tier}]", flush=True)
+        return 0
+
+    if action == "confirm":
+        ok, out, err, st = ssh_exec(host, port, user, pw,
+                                    f"sudo touch {WFB_CFG_CONFIRM}")
+        print("CONFIRMED" if ok else "CONFIRM_FAILED", flush=True)
+        return 0 if ok else 1
+
+    if action in ("set", "restore-default"):
+        timeout = int(args.timeout or 60)
+
+        if action == "set":
+            try:
+                edits = _wfb_parse_params(args.params)
+            except ValueError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+            danger = [f"{s}.{k}" for (s, k) in edits
+                      if f"{s}.{k}" in WFB_TIER2]
+            if danger:
+                if not args.danger_ack:
+                    print(f"ERROR: {', '.join(danger)} affects BOTH ends — "
+                          f"requires --danger-ack", file=sys.stderr)
+                    return 1
+                if target == "companion" and not _wfb_secondary_ok(cfg):
+                    print("ERROR: secondary connection to companion not reachable — "
+                          "refusing dangerous change (channel/bandwidth) without a "
+                          "recovery path", file=sys.stderr)
+                    return 1
+            ok, out, err, st = ssh_exec(host, port, user, pw, f"cat {WFB_CFG_PATH}")
+            if not ok:
+                return run_cmd(ok, out, err, st)
+            try:
+                new_text = _wfb_cfg_edit(out, edits)
+            except ValueError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+            if not sftp_put_text(host, port, user, pw, new_text, "/tmp/wfb-new.cfg"):
+                return 1
+            src = "/tmp/wfb-new.cfg"
+        else:
+            src = WFB_CFG_DEFAULT
+
+        ok, out, err, st = ssh_exec(
+            host, port, user, pw,
+            f"sudo {WFB_CFG_APPLY} {src} {timeout}")
+        if not ok:
+            print(out.strip(), flush=True)
+            print(err.strip(), file=sys.stderr, flush=True)
+            return 1
+        print(out.strip(), flush=True)
+
+        # Poll until the device is reachable again, then send confirm so the
+        # watchdog keeps the new cfg. If it never comes back, the device
+        # rolls itself back at the timeout.
+        deadline = time.time() + max(timeout - 8, 10)
+        while time.time() < deadline:
+            time.sleep(3)
+            if not is_reachable(host, port, timeout=3):
+                continue
+            ok2, _o, _e, _s = ssh_exec(host, port, user, pw,
+                                       f"sudo touch {WFB_CFG_CONFIRM}")
+            if ok2:
+                print("APPLIED (confirmed — new config kept)", flush=True)
+                return 0
+        print("ROLLED_BACK (device unreachable — watchdog restores previous config)",
+              flush=True)
+        return 1
+
+    print(f"ERROR: unknown wfb-config action '{action}'", file=sys.stderr)
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +994,18 @@ def main():
     p_svc.add_argument("--target",  required=True, choices=["companion", "relay"])
     p_svc.add_argument("--service")
 
+    # wfb-config — edit wifibroadcast.cfg safely (watchdog apply + rollback)
+    p_wfb = sub.add_parser("wfb-config")
+    p_wfb.add_argument("action", choices=[
+        "get", "params", "set", "set-both", "restore-default", "confirm",
+        "check-secondary"])
+    p_wfb.add_argument("--target", choices=["companion", "relay"])
+    p_wfb.add_argument("--params", help="comma list: section.key=value "
+                       "(e.g. base.mcs_index=2,video.fec_k=8)")
+    p_wfb.add_argument("--danger-ack", action="store_true",
+                       help="acknowledge a TIER2 (both-ends) change")
+    p_wfb.add_argument("--timeout", help="watchdog rollback timeout seconds (default 60)")
+
     # status — fast reachability check, no password needed
     sub.add_parser("status")
 
@@ -651,6 +1032,8 @@ def main():
         return relay_actions(args, cfg)
     if args.cmd == "services":
         return services_actions(args, cfg)
+    if args.cmd == "wfb-config":
+        return wfb_config_actions(args, cfg)
     if args.cmd == "config":
         return config_actions(args, cfg)
     if args.cmd == "status":

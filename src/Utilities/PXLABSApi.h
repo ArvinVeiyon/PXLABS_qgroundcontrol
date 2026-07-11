@@ -36,6 +36,33 @@ public:
     Q_INVOKABLE PXLABSRequest* shutdown()    { return _run({_name, QStringLiteral("shutdown")}); }
     Q_INVOKABLE PXLABSRequest* sshTerminal() { return _run({_name, QStringLiteral("ssh-terminal")}); }
 
+    // WFB config (wifibroadcast.cfg) — watchdog apply with auto-rollback.
+    // `wfb-config <action> --target <node> [...]`
+    Q_INVOKABLE PXLABSRequest* wfbCfgParams() { return _wfbCfg(QStringLiteral("params")); }
+    Q_INVOKABLE PXLABSRequest* wfbCfgGet()    { return _wfbCfg(QStringLiteral("get")); }
+
+    // params: "section.key=value,..." (validated CLI-side). TIER2 keys
+    // (channel/bandwidth) additionally need dangerAck + reachable secondary.
+    Q_INVOKABLE PXLABSRequest* wfbCfgSet(const QString& params, bool dangerAck = false,
+                                         int timeoutS = 60)
+    {
+        QStringList args { QStringLiteral("wfb-config"), QStringLiteral("set"),
+                           QStringLiteral("--target"),  _name,
+                           QStringLiteral("--params"),  params,
+                           QStringLiteral("--timeout"), QString::number(timeoutS) };
+        if (dangerAck) {
+            args << QStringLiteral("--danger-ack");
+        }
+        return _run(args);
+    }
+
+    Q_INVOKABLE PXLABSRequest* wfbCfgRestoreDefault(int timeoutS = 60)
+    {
+        return _run({QStringLiteral("wfb-config"), QStringLiteral("restore-default"),
+                     QStringLiteral("--target"),  _name,
+                     QStringLiteral("--timeout"), QString::number(timeoutS)});
+    }
+
     // systemd services — `services <action> --target <node> [--service <name>]`
     Q_INVOKABLE PXLABSRequest* servicesRefresh()                 { return _svc(QStringLiteral("refresh")); }
     Q_INVOKABLE PXLABSRequest* serviceStart(const QString& name)   { return _svc(QStringLiteral("start"),   name); }
@@ -55,6 +82,12 @@ protected:
     PXLABSCommandBus* _bus = nullptr;
 
 private:
+    PXLABSRequest* _wfbCfg(const QString& action)
+    {
+        return _run({QStringLiteral("wfb-config"), action,
+                     QStringLiteral("--target"), _name});
+    }
+
     PXLABSRequest* _svc(const QString& action, const QString& service = QString())
     {
         QStringList args { QStringLiteral("services"), action,
@@ -174,6 +207,25 @@ public:
     Q_INVOKABLE PXLABSRequest* configShow()
     {
         return _bus->enqueue({QStringLiteral("config"), QStringLiteral("show")});
+    }
+    // Is the companion's secondary (non-WFB) route alive? Gates TIER2 changes.
+    Q_INVOKABLE PXLABSRequest* wfbCfgCheckSecondary()
+    {
+        return _bus->enqueue({QStringLiteral("wfb-config"), QStringLiteral("check-secondary")});
+    }
+    // Apply the same params to BOTH ends (companion first, then relay) with a
+    // matched-ends guarantee: neither side is confirmed until both applied, so
+    // any failure rolls both back. wifi_txpower is per-side and rejected here.
+    Q_INVOKABLE PXLABSRequest* wfbCfgSetBoth(const QString& params, bool dangerAck = false,
+                                             int timeoutS = 60)
+    {
+        QStringList args { QStringLiteral("wfb-config"), QStringLiteral("set-both"),
+                           QStringLiteral("--params"),  params,
+                           QStringLiteral("--timeout"), QString::number(timeoutS) };
+        if (dangerAck) {
+            args << QStringLiteral("--danger-ack");
+        }
+        return _bus->enqueue(args);
     }
     // opts: JS object keyed by CLI flag name without the leading "--", e.g.
     //   { "primary-ip": "10.5.6.101", "username": "pi", "companion-password": "…" }
