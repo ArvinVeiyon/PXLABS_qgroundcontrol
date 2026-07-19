@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """
-pxlabs_cli.py  —  v2.1
+pxlabs_cli.py  —  v2.2
 CLI bridge for QGC PXLABS pages and pxlabs_cli integration.
 
 Security fix: sudo password is fed via `printf` instead of `echo`
 so it does not appear in `ps aux` on the remote host.
+
+New subcommands vs v2.1 (multi-camera, vision_config_manager v2.0.0):
+  companion camera-list [--all]     — camera inventory as JSON (stable id, alias,
+                                      formats, role_lock, active primary/secondary)
+  companion camera-set-alias --id --name   — store user alias companion-side
+  companion camera-apply --primary [--secondary]  — select stream by id/alias
+                                      (guarded: depth/IR nodes refused companion-side)
 
 New subcommands vs v2.0:
   config show                       — print resolved config
@@ -17,6 +24,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -660,9 +668,35 @@ done'""")
             print(f"wifi-temp error: {e}", file=sys.stderr, flush=True)
             return 0
 
+    if action == "camera-list":
+        # Machine-readable inventory: stable ids, aliases, formats, role_lock,
+        # active primary/secondary. Stdout carries only the JSON object.
+        flag = " --all" if getattr(args, "all", False) else ""
+        return run_cmd(*ssh_exec(ip, port, username, password,
+                                  f"sudo vision_config_manager list --json{flag}"))
+
+    if action == "camera-set-alias":
+        cam_id = getattr(args, "id", "") or ""
+        name   = (getattr(args, "name", "") or "").strip()
+        if not cam_id or not name:
+            print("ERROR: camera-set-alias requires --id and --name", file=sys.stderr)
+            return 1
+        return run_cmd(*ssh_exec(ip, port, username, password,
+                                  f"sudo vision_config_manager set-alias "
+                                  f"{shlex.quote(cam_id)} {shlex.quote(name)} 2>&1"))
+
     if action == "camera-apply":
-        device     = getattr(args, "device", "/dev/video0")
-        # Switch active camera; vision_config_manager restarts streaming service
+        primary   = getattr(args, "primary", "") or ""
+        secondary = getattr(args, "secondary", "") or ""
+        if primary:
+            # v2 path: id/alias/dev resolved companion-side, guarded against
+            # non-streamable (depth/IR) devices. Guard message lands on stdout.
+            cmd = f"sudo vision_config_manager apply {shlex.quote(primary)}"
+            if secondary:
+                cmd += f" {shlex.quote(secondary)}"
+            return run_cmd(*ssh_exec(ip, port, username, password, cmd + " 2>&1"))
+        # Legacy path (--device): positional mode, same resolve+guard since v2
+        device = getattr(args, "device", "/dev/video0")
         return run_cmd(*ssh_exec(ip, port, username, password, f"sudo vision_config_manager {device}"))
 
     if action == "camera-query":
@@ -961,23 +995,29 @@ def status_actions(cfg):
 # CLI parser
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="PXLABS CLI v2.1 — companion/relay control bridge")
+    parser = argparse.ArgumentParser(description="PXLABS CLI v2.2 — companion/relay control bridge")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # companion
     p_comp = sub.add_parser("companion")
     p_comp.add_argument("action", choices=[
         "front-switch", "bottom-switch", "split-front-bottom", "split-bottom-front",
+        "camera-list", "camera-set-alias",
         "camera-apply", "camera-query", "camera-params",
         "wifi-temp",
         "capture-front", "capture-bottom",
         "reboot", "shutdown", "ssh-terminal",
     ])
     p_comp.add_argument("--swap",       action="store_true", help="swap camera mapping")
-    p_comp.add_argument("--device",     default="/dev/video0", help="camera device path")
+    p_comp.add_argument("--device",     default="/dev/video0", help="camera device path (or stable id/alias)")
     p_comp.add_argument("--resolution", default="1920x1080",   help="resolution e.g. 1920x1080")
     p_comp.add_argument("--fps",        default="60",          help="frames per second")
     p_comp.add_argument("--format",     default="MJPG",        help="pixel format e.g. MJPG or UYVY")
+    p_comp.add_argument("--all",        action="store_true",   help="camera-list: include non-streamable nodes")
+    p_comp.add_argument("--id",         default="",            help="camera-set-alias: stable camera id")
+    p_comp.add_argument("--name",       default="",            help="camera-set-alias: alias (1-32 chars)")
+    p_comp.add_argument("--primary",    default="",            help="camera-apply: primary camera id/alias/dev")
+    p_comp.add_argument("--secondary",  default="",            help="camera-apply: secondary PiP camera id/alias/dev")
 
     # relay
     p_relay = sub.add_parser("relay")

@@ -10,17 +10,18 @@ All PXLABS additions are marked with `// PXLABS integration — additive` commen
 
 | Version | Tag | Branch | Date | Status |
 |---------|-----|--------|------|--------|
-| v3.2.0 | `PXLABS-v3.2.0` | `PXLABS-integration` | 2026-07-12 | ✅ Latest — **WFB config editor** (Settings→WFB Config: watchdog-guarded `wifibroadcast.cfg` editing with on-device auto-rollback; apply-to-both `set-both` choreography companion→relay with matched-ends guarantee, live-tested MCS 1→2→1; auto-load on open/target switch; per-side TX power; secondary-IP config UI). **AIR/WFB toolbar link chips** fed by `PXLABSLinkMonitor` (direct TCP client on the relay 8103 wfb-ng JSON feed; host follows `relay_ip` in ssh_config.json); click opens the bundled **WFB Link Monitor** (frozen PyQt app, single-instance, closes with G-Control) |
+| v3.3.0 | `PXLABS-v3.3.0` | `PXLABS-integration` | 2026-07-19 | ✅ Latest — **Multi-camera system** (companion vision_config_manager v2 contract): dynamic camera inventory replaces the fixed front/bottom model everywhere. CLI v2.2 adds `camera-list [--all]` (JSON: stable by-id key, alias, formats, role_lock, active primary/secondary), `camera-set-alias`, `camera-apply --primary [--secondary]` (guarded server-side — depth/IR refused loudly). FlyView camera panel: live list with ● primary / ◪ PiP / ⚠ role_lock markers, PRI + PIP/✕PIP per camera, ↻ refresh, status line shows companion guard/WARNING text verbatim. Settings→Companion: auto-loading Cameras group (Set Primary / Set PiP / Rename… alias editor, active summary, "Show all camera nodes" toggle greys non-streamable depth/IR); Advanced device combo inventory-driven, Format/Res/FPS auto-cascade from a live query (no more unsupported fallback values). Live-tested against Vind-Roz (guard, alias roundtrip incl. spaces, apply-by-alias). Legacy front/bottom CLI actions kept for compat |
+| v3.2.0 | `PXLABS-v3.2.0` | `PXLABS-integration` | 2026-07-12 | Previous stable — **WFB config editor** (Settings→WFB Config: watchdog-guarded `wifibroadcast.cfg` editing with on-device auto-rollback; apply-to-both `set-both` choreography companion→relay with matched-ends guarantee, live-tested MCS 1→2→1; auto-load on open/target switch; per-side TX power; secondary-IP config UI). **AIR/WFB toolbar link chips** fed by `PXLABSLinkMonitor` (direct TCP client on the relay 8103 wfb-ng JSON feed; host follows `relay_ip` in ssh_config.json); click opens the bundled **WFB Link Monitor** (frozen PyQt app, single-instance, closes with G-Control) |
 | v3.1.0 | `PXLABS-v3.1.0` | `PXLABS-integration` | 2026-07-11 | Previous stable — control-plane API facade (`Pxlabs` + `PXLABSCommandBus`): queued command bus with request correlation + Interactive-preempts-Background priority. Closes A1 (shared-runner contention), B1 (camera quick-buttons no longer silently dropped), B5 (QStringList args, no space-splitting). B4 partial (QGC side no longer shells). Removes the `pxlabs_bg_active` on-disk mutex, retry timers, flag-routing, Abort buttons across all 6 QML panels. cmake/Git.cmake version-parse fix. Legacy `PXLABSCommandRunner` kept for rollback |
 | v3.0.0 | `PXLABS-v3.0.0` | `release/PXLABS-v3.0` | 2026-06-14 | Previous stable — relay services panel fix (per-target lists + bash parsing fix), FlyView shutdown/reboot acknowledgement, camera resolution/FPS/format dropdowns |
 | v2.2.1 | `PXLABS-v2.2.1` | `PXLABS-integration` | 2026-06-04 | Previous stable — CLI shutdown/ssh-terminal fixes, NSIS 3.11 compat, FlyView panel responsiveness |
 | v2.2.0 | `PXLABS-v2.2.0` | `release/PXLABS-v2.2` | 2026-03-22 | Previous stable |
 | v2.1.0 | `PXLABS-v2.1.0` | `release/PXLABS-v2.1` | 2026-03-20 | Previous stable |
 
-### Installer (v3.2.0 — latest)
+### Installer (v3.3.0 — latest)
 
-`G-Control-Setup-v3.2.0.exe` at `installer\G-Control-Setup-v3.2.0.exe` (LZMA compressed).
-Previous: `G-Control-Setup-v3.1.0.exe` (~117 MB, tag `PXLABS-v3.1.0`), `G-Control-Setup-v3.0.0.exe` (tag `PXLABS-v3.0.0`), `G-Control-Setup-v2.2.1.exe` (tag `PXLABS-v2.2.1`), `G-Control-Setup-v2.2.0.exe` (tag `PXLABS-v2.2.0`).
+`G-Control-Setup-v3.3.0.exe` at `installer\G-Control-Setup-v3.3.0.exe` (LZMA compressed).
+Previous: `G-Control-Setup-v3.2.0.exe` (tag `PXLABS-v3.2.0`), `G-Control-Setup-v3.1.0.exe` (~117 MB, tag `PXLABS-v3.1.0`), `G-Control-Setup-v3.0.0.exe` (tag `PXLABS-v3.0.0`), `G-Control-Setup-v2.2.1.exe` (tag `PXLABS-v2.2.1`), `G-Control-Setup-v2.2.0.exe` (tag `PXLABS-v2.2.0`).
 
 - Installs to `C:\Program Files\G-Control\`
 - Bundles `pxlabs_cli.exe` — no Python required on target machine
@@ -75,7 +76,7 @@ Previous: `G-Control-Setup-v3.1.0.exe` (~117 MB, tag `PXLABS-v3.1.0`), `G-Contro
   - `CA:active` + `SA:inactive` → "cluster"
   - Both active → defaults to "standalone"
 - **WiFi temp chip REMOVED from this file** — moved to `FlyViewToolBar.qml` (see §7 below)
-- Draggable camera switch panel: Front / Bottom / Split F→B / Split B→F
+- Draggable camera panel — **(v3.3.0)** dynamic: fetches `companion camera-list` (background, at startup + ↻), one row per streamable camera with ● primary / ◪ PiP / ⚠ role_lock markers and PRI + PIP/✕PIP buttons (`camera-apply`), own status line (guard refusals + role_lock WARNINGs from the companion shown verbatim). *(pre-v3.3.0: fixed Front / Bottom / Split F→B / Split B→F buttons)*
 - Panel position saved/restored via `QGroundControl.saveGlobalSetting/loadGlobalSetting`
 
 ### 7. `src/QmlControls/FlyViewToolBar.qml` *(MODIFIED — additive)*
@@ -98,7 +99,7 @@ Previous: `G-Control-Setup-v3.1.0.exe` (~117 MB, tag `PXLABS-v3.1.0`), `G-Contro
 
 | File | Purpose |
 |------|---------|
-| `src/Utilities/PXLABSApi.h` / `.cc` | **(v3.1.0)** `Pxlabs` singleton facade + `PXLABSCompanionNode` / `PXLABSRelayNode`. QML calls typed operations instead of a shared runner |
+| `src/Utilities/PXLABSApi.h` / `.cc` | **(v3.1.0)** `Pxlabs` singleton facade + `PXLABSCompanionNode` / `PXLABSRelayNode`. QML calls typed operations instead of a shared runner. **(v3.3.0)** companion node gains `cameraList(background, allNodes)`, `setCameraAlias(id, alias)`, `applyCamera(primary, secondary)` |
 | `src/Utilities/PXLABSCommandBus.h` / `.cc` | **(v3.1.0)** Queued command engine + `PXLABSRequest` correlation object. `enqueue()` never rejects (returns a request); per-request signals; Interactive priority preempts a running Background poll; Background polls coalesce; args passed as `QStringList` (no shell) |
 | `src/Utilities/PXLABSCommandRunner.h` | C++ QObject — QProcess wrapper, exposes `PXLABSRunner` singleton to QML. **(v3.1.0: superseded by the `Pxlabs` facade; kept registered for rollback)** |
 | `src/Utilities/PXLABSCommandRunner.cc` | Implementation — runs `pxlabs_cli.exe <args>` (installed) or `python pxlabs_cli.py <args>` (dev); auto-detected by `.exe` extension |
@@ -106,9 +107,9 @@ Previous: `G-Control-Setup-v3.1.0.exe` (~117 MB, tag `PXLABS-v3.1.0`), `G-Contro
 | `src/UI/AppSettings/WFBConfig.qml` | **(v3.2.0)** Settings → WFB Config — safe `wifibroadcast.cfg` editor: auto-load on open/target switch, Apply-to-Link (both ends via `wfb-config set-both`), per-side TX power, secondary-IP config, channel/bandwidth gated behind Check Secondary. Every apply watchdog-guarded on-device (auto-rollback). See `WFB_CONFIG_EDITOR.md` |
 | `src/UI/AppSettings/ConnectionControl.qml` | **Settings page — SSH config for companion + relay. CONFIGURE FIRST before using CLI. Also: Periodic Connection Check settings + Wi-Fi Temperature Polling settings.** |
 | `src/UI/AppSettings/PXLABSSettings.qml` | Settings page — Python path, CLI path, Test CLI |
-| `src/UI/AppSettings/CompanionControl.qml` | Settings page — Camera switch, Camera Device (Advanced: query/set params), System, Services. Capture removed (QGC has native capture). |
+| `src/UI/AppSettings/CompanionControl.qml` | Settings page — **(v3.3.0)** Cameras group (auto-loads inventory on open: Set Primary / Set PiP / Rename… alias editor, active summary, Show-all-nodes toggle), Camera Device (Advanced: inventory-driven combo, auto-cascading Format/Res/FPS from live query), System, Services. Capture removed (QGC has native capture). |
 | `src/UI/AppSettings/RelayControl.qml` | Settings page — WFB mode, NICs, System, Services |
-| `tools/pxlabs_cli.py` | CLI bridge — SSH to companion/relay |
+| `tools/pxlabs_cli.py` | CLI bridge — SSH to companion/relay. **(v3.3.0 → CLI v2.2)** adds `companion camera-list [--all]` / `camera-set-alias --id --name` / `camera-apply --primary [--secondary]` (vision_config_manager v2 contract, ids/aliases accepted everywhere `--device` was) |
 | `tools/pxlabs_cli.spec` | PyInstaller spec — bundles cli.py → pxlabs_cli.exe (optimize=0, sys.frozen path fix) |
 | `installer/G-Control-Setup.nsi` | NSIS installer script — packages full Release\ into setup exe |
 | `installer/EnvVarUpdate.nsh` | NSIS helper — sets/removes GST_PLUGIN_PATH in user environment |

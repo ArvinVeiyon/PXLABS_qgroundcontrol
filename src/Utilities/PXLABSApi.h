@@ -112,6 +112,42 @@ public:
     // which: "front" | "bottom" | "split-fb" | "split-bf"
     Q_INVOKABLE PXLABSRequest* switchCamera(const QString& which, bool swap = false);
 
+    // Multi-camera (vision_config_manager v2) ------------------------------
+    // Inventory as one JSON object on stdout: cameras[] {id, dev, hw_name,
+    // alias, streamable, formats, role_lock} + active {primary, secondary}.
+    // `background` true for silent refreshes (panel open), false for buttons.
+    // `allNodes` adds non-streamable capture nodes (depth/IR) to the list.
+    Q_INVOKABLE PXLABSRequest* cameraList(bool background = false, bool allNodes = false)
+    {
+        QStringList args { _name, QStringLiteral("camera-list") };
+        if (allNodes) {
+            args << QStringLiteral("--all");
+        }
+        return _run(args,
+                    background ? PXLABSRequest::Background : PXLABSRequest::Interactive);
+    }
+
+    Q_INVOKABLE PXLABSRequest* setCameraAlias(const QString& id, const QString& alias)
+    {
+        return _run({_name, QStringLiteral("camera-set-alias"),
+                     QStringLiteral("--id"),   id,
+                     QStringLiteral("--name"), alias});
+    }
+
+    // primary/secondary: stable id (preferred), alias, or /dev/videoN.
+    // Empty secondary = primary only (removes PiP). Guarded companion-side:
+    // depth/IR selections fail loudly with the reason on stdout.
+    Q_INVOKABLE PXLABSRequest* applyCamera(const QString& primary,
+                                           const QString& secondary = QString())
+    {
+        QStringList args { _name, QStringLiteral("camera-apply"),
+                           QStringLiteral("--primary"), primary };
+        if (!secondary.isEmpty()) {
+            args << QStringLiteral("--secondary") << secondary;
+        }
+        return _run(args);
+    }
+
     Q_INVOKABLE PXLABSRequest* cameraQuery(const QString& device)
     {
         return _run({_name, QStringLiteral("camera-query"), QStringLiteral("--device"), device});

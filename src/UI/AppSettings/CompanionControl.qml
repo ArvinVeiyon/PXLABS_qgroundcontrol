@@ -16,6 +16,11 @@ SettingsPage {
 
     property bool _busy: false   // own commands only — bus state is global
 
+    // Camera rows (Set Primary / Set PiP / Rename) only exist once the
+    // inventory is loaded — fetch it on page open instead of waiting for
+    // a manual Refresh List click.
+    Component.onCompleted: Qt.callLater(_refreshCameras)
+
     // Services — dynamic list populated by refresh
     property var    _svcNames: [
         "mavlink.router.service", "microxrce-agent.service",
@@ -24,6 +29,12 @@ SettingsPage {
         "block-traffic.service", "wifibroadcast@drone.service",
         "system_files_sync.timer"
     ]
+
+    // Multi-camera inventory (vision_config_manager v2 via camera-list JSON)
+    property var    _cameras:         []    // [{id, dev, hw_name, alias, streamable, formats, role_lock}]
+    property string _activePrimary:   ""    // stable id (or raw dev) from `active`
+    property string _activeSecondary: ""
+    property string _renameId:        ""    // camera id being renamed ("" = editor hidden)
 
     // Camera resolution/fps/format — dynamic lists populated by camera-query
     property var    _camFmtMap:      ({})   // format -> { order: [resolutions], fps: {resolution: [fps]} }
@@ -71,6 +82,66 @@ SettingsPage {
     function _cameraQuery(device) {
         var req = _dispatch(Pxlabs.companion.cameraQuery(device))
         req.succeeded.connect(function() { _applyCameraQuery(req.output) })
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-camera helpers (camera-list / camera-apply / camera-set-alias)
+    // -----------------------------------------------------------------------
+    function _camName(c) {
+        return (c.alias && c.alias.length > 0) ? c.alias : (c.hw_name || c.dev || c.id)
+    }
+
+    // `active` values may be a stable id or a raw /dev/videoN — match either.
+    function _camIsActive(c, key) {
+        return key.length > 0 && (key === c.id || key === c.dev)
+    }
+
+    function _activeSummary() {
+        var p = "", s = ""
+        for (var i = 0; i < _cameras.length; i++) {
+            if (_camIsActive(_cameras[i], _activePrimary))   p = _camName(_cameras[i])
+            if (_camIsActive(_cameras[i], _activeSecondary)) s = _camName(_cameras[i])
+        }
+        if (p.length === 0) return qsTr("(active camera unknown — refresh list)")
+        return qsTr("Active: ") + p + (s.length > 0 ? " + " + s + qsTr(" PiP") : "")
+    }
+
+    function _refreshCameras() {
+        var req = _dispatch(Pxlabs.companion.cameraList(false, showAllCheck.checked))
+        req.succeeded.connect(function() {
+            // Output can carry SSH/sudo noise around the JSON — extract the object.
+            var t = req.output
+            var s = t.indexOf("{"), e = t.lastIndexOf("}")
+            if (s < 0 || e <= s) return
+            try {
+                var obj = JSON.parse(t.substring(s, e + 1))
+                _cameras         = obj.cameras || []
+                _activePrimary   = (obj.active && obj.active.primary)   ? obj.active.primary   : ""
+                _activeSecondary = (obj.active && obj.active.secondary) ? obj.active.secondary : ""
+                // Auto-cascade the Advanced Format/Res/FPS dropdowns from the
+                // selected device so they never show unsupported fallback values.
+                if (_cameras.length > 0)
+                    Qt.callLater(function() { _cameraQuery(_deviceKey()) })
+            } catch (err) {
+                outputArea.text += qsTr("\n(camera list JSON parse failed)")
+            }
+        })
+    }
+
+    function _applyCamera(primaryKey, secondaryKey) {
+        var req = _dispatch(Pxlabs.companion.applyCamera(primaryKey, secondaryKey || ""))
+        req.succeeded.connect(function() { _refreshCameras() })
+    }
+
+    // Advanced section: id of the selected camera (falls back to raw dev text
+    // when the inventory hasn't been fetched — v2 accepts either).
+    function _deviceKey() {
+        if (_cameras.length > 0 && deviceCombo.currentIndex >= 0
+                && deviceCombo.currentIndex < _cameras.length) {
+            var c = _cameras[deviceCombo.currentIndex]
+            return c.id || c.dev
+        }
+        return deviceCombo.currentText
     }
 
     function _resolvedSvc() {
@@ -154,42 +225,120 @@ SettingsPage {
     // -----------------------------------------------------------------------
     SettingsGroupLayout {
         Layout.fillWidth: true
-        heading: qsTr("Camera Switch")
-
-        QGCCheckBoxSlider {
-            id:               swapCheck
-            Layout.fillWidth: true
-            text:             qsTr("Swap camera mapping (front ↔ bottom device)")
-            checked:          false
-        }
+        heading: qsTr("Cameras")
 
         RowLayout {
             Layout.fillWidth: true
             spacing: ScreenTools.defaultFontPixelWidth
 
             QGCButton {
-                text:      qsTr("Front Camera")
+                text:      qsTr("Refresh List")
                 enabled:   !_busy
-                onClicked: _dispatch(Pxlabs.companion.switchCamera("front", swapCheck.checked))
+                onClicked: _refreshCameras()
+            }
+
+            QGCLabel {
+                Layout.fillWidth: true
+                text:  _activeSummary()
+                color: QGroundControl.globalPalette.colorGrey
+                elide: Text.ElideRight
+            }
+        }
+
+        QGCCheckBoxSlider {
+            id:               showAllCheck
+            Layout.fillWidth: true
+            text:             qsTr("Show all camera nodes (incl. depth/IR — cannot stream)")
+            checked:          false
+            onClicked:        _refreshCameras()
+        }
+
+        // One row per streamable camera: ● primary, ◪ secondary (PiP), ⚠ role_lock
+        Repeater {
+            model: _cameras
+
+            delegate: RowLayout {
+                Layout.fillWidth: true
+                spacing: ScreenTools.defaultFontPixelWidth
+
+                property var    cam:       modelData
+                property string camKey:    cam.id || cam.dev || ""
+                property bool   canStream: cam.streamable === true
+                property bool   isPri:     _camIsActive(cam, _activePrimary)
+                property bool   isSec:     _camIsActive(cam, _activeSecondary)
+
+                QGCLabel {
+                    Layout.fillWidth: true
+                    text: (isPri ? "● " : isSec ? "◪ " : "") + _camName(cam)
+                          + " — " + (cam.hw_name || "?") + " (" + (cam.dev || "?") + ")"
+                          + (cam.role_lock ? qsTr("  ⚠ reserved: ") + cam.role_lock : "")
+                          + (canStream ? "" : qsTr("  — cannot stream: ")
+                                              + Object.keys(cam.formats || {}).join("/"))
+                    color: !canStream ? QGroundControl.globalPalette.colorGrey
+                         : isPri ? QGroundControl.globalPalette.colorGreen
+                         : cam.role_lock ? QGroundControl.globalPalette.colorOrange
+                         : QGroundControl.globalPalette.text
+                    elide: Text.ElideRight
+                }
+
+                QGCButton {
+                    text:      qsTr("Set Primary")
+                    enabled:   !_busy && canStream && !isPri && camKey.length > 0
+                    // Keep the current PiP unless this camera is it
+                    onClicked: _applyCamera(camKey,
+                                   (!isSec && _activeSecondary.length > 0) ? _activeSecondary : "")
+                }
+
+                QGCButton {
+                    text:      isSec ? qsTr("Remove PiP") : qsTr("Set PiP")
+                    enabled:   !_busy && canStream && !isPri && _activePrimary.length > 0 && camKey.length > 0
+                    onClicked: isSec ? _applyCamera(_activePrimary, "")
+                                     : _applyCamera(_activePrimary, camKey)
+                }
+
+                QGCButton {
+                    text:      qsTr("Rename…")
+                    enabled:   !_busy && cam.id !== undefined && cam.id !== null
+                    onClicked: { _renameId = cam.id; renameField.text = cam.alias || "" }
+                }
+            }
+        }
+
+        // Inline alias editor (opens via Rename…)
+        RowLayout {
+            visible: _renameId.length > 0
+            Layout.fillWidth: true
+            spacing: ScreenTools.defaultFontPixelWidth
+
+            QGCLabel { text: qsTr("Alias:") }
+
+            QGCTextField {
+                id:               renameField
+                Layout.fillWidth: true
+                maximumLength:    32
+                placeholderText:  qsTr("1-32 chars: letters/digits/space _ . -")
             }
 
             QGCButton {
-                text:      qsTr("Bottom Camera")
-                enabled:   !_busy
-                onClicked: _dispatch(Pxlabs.companion.switchCamera("bottom", swapCheck.checked))
+                text:    qsTr("Save")
+                enabled: !_busy && renameField.text.trim().length > 0
+                onClicked: {
+                    var req = _dispatch(Pxlabs.companion.setCameraAlias(_renameId, renameField.text.trim()))
+                    req.succeeded.connect(function() { _renameId = ""; _refreshCameras() })
+                }
             }
 
             QGCButton {
-                text:      qsTr("Split: Front+Bottom")
-                enabled:   !_busy
-                onClicked: _dispatch(Pxlabs.companion.switchCamera("split-fb", swapCheck.checked))
+                text:      qsTr("Cancel")
+                onClicked: _renameId = ""
             }
+        }
 
-            QGCButton {
-                text:      qsTr("Split: Bottom+Front")
-                enabled:   !_busy
-                onClicked: _dispatch(Pxlabs.companion.switchCamera("split-bf", swapCheck.checked))
-            }
+        QGCLabel {
+            visible:        _cameras.length === 0
+            text:           qsTr("(Refresh List to load cameras from the companion)")
+            color:          QGroundControl.globalPalette.colorGrey
+            font.pointSize: ScreenTools.smallFontPointSize
         }
     }
 
@@ -209,14 +358,20 @@ SettingsPage {
             QGCLabel { text: qsTr("Device:") }
 
             QGCComboBox {
-                id:    deviceCombo
-                model: ["/dev/video0", "/dev/video2", "/dev/video3"]
+                id: deviceCombo
+                Layout.preferredWidth: ScreenTools.defaultFontPixelWidth * 26
+                // Inventory-driven once fetched; raw dev fallback until then
+                model: _cameras.length > 0
+                       ? _cameras.map(function(c) { return _camName(c) + " (" + (c.dev || "?") + ")" })
+                       : ["/dev/video0", "/dev/video2", "/dev/video3"]
+                // Re-cascade Format/Res/FPS for the newly selected device
+                onActivated: _cameraQuery(_deviceKey())
             }
 
             QGCButton {
                 text:      qsTr("Query Details")
                 enabled:   !_busy
-                onClicked: _cameraQuery(deviceCombo.currentText)
+                onClicked: _cameraQuery(_deviceKey())
             }
 
             QGCLabel {
@@ -252,7 +407,7 @@ SettingsPage {
             QGCButton {
                 text:      qsTr("Apply")
                 enabled:   !_busy
-                onClicked: _dispatch(Pxlabs.companion.setCamParams(deviceCombo.currentText, resCombo.currentText, fpsCombo.currentText, fmtCombo.currentText))
+                onClicked: _dispatch(Pxlabs.companion.setCamParams(_deviceKey(), resCombo.currentText, fpsCombo.currentText, fmtCombo.currentText))
             }
         }
     }

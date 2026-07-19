@@ -9,8 +9,8 @@
 | **App name** | G-Control |
 | **Base** | QGroundControl v5.0.8 |
 | **Branch** | `PXLABS-integration` |
-| **Latest release** | tag `PXLABS-v3.2.0` · branch `PXLABS-integration` |
-| **Installer** | `G-Control-Setup-v3.2.0.exe` (no dependencies, incl. WFB Link Monitor) |
+| **Latest release** | tag `PXLABS-v3.3.0` · branch `PXLABS-integration` |
+| **Installer** | `G-Control-Setup-v3.3.0.exe` (no dependencies, incl. WFB Link Monitor) |
 | **Build** | VS2022 + Qt 6.8.3 + GStreamer 1.22.12 |
 | **Companion** | Vind-Roz · RPi5 8GB · Ubuntu 24.04 · ROS2 Jazzy · PX4 v1.17.0 |
 | **Relay** | Vind-Rly · RPi5 · Ubuntu 24.04 · wifibroadcast@gs |
@@ -20,18 +20,18 @@
 - **System Control panel** — right-edge resizable slide-out: companion + relay power, SSH terminal, WFB standalone/cluster mode switch with live status glyph on pull tab
 - **Air-TX Temp chip** — live WFB RF card temperature in toolbar (green/orange/red colour-coded)
 - **Connection Status chips** — Comp + Relay reachability dots in toolbar, auto-refresh every 30 s
-- **Camera switch panel** — draggable front/bottom/split-front-bottom/split-bottom-front
-- **Camera Device Advanced** — query full camera detail, cascading Format/Resolution/FPS dropdowns auto-populated and pre-selected from `vision_config_manager`, Apply via `camera-params`
+- **Multi-camera panel** (v3.3.0) — draggable FlyView panel driven by live `camera-list` inventory: one row per camera with ● primary / ◪ PiP / ⚠ role_lock markers, PRI + PIP/✕PIP switching, guard refusals shown verbatim, 60 s background re-sync (picks up RC channel switches)
+- **Camera management** (v3.3.0) — Settings → Companion: full camera inventory with Set Primary / Set PiP / Rename (persistent aliases), Show-all-nodes toggle; Advanced device query with auto-cascading Format/Resolution/FPS dropdowns from `vision_config_manager`
 - **Settings pages** — Connection (SSH config), PXLABS Settings, Companion Control, Relay Station
 - **Control-plane facade** (v3.1.0) — companion/relay commands go through a queued `Pxlabs` API with request correlation + Interactive-preempts-Background priority; camera quick-buttons no longer get silently dropped by a running poll
 - **WFB Config editor** (v3.2.0) — Settings → WFB Config: safe `wifibroadcast.cfg` editing (MCS/STBC/LDPC/FEC/TX power/channel/bandwidth) with on-device watchdog auto-rollback; "Apply to Link" changes BOTH ends with a matched-ends guarantee
 - **AIR / WFB link chips** (v3.2.0) — live link quality + air utilization in the toolbar from the wfb-ng 8103 feed; click opens the bundled **WFB Link Monitor** (per-stream sparklines, per-antenna signal, SNR-cliff predictors)
-- **Windows installer** — `G-Control-Setup-v3.2.0.exe`, no Python or manual DLL setup needed
+- **Windows installer** — `G-Control-Setup-v3.3.0.exe`, no Python or manual DLL setup needed
 
 ## Quick Start
 
 ### Install (end users)
-Run `G-Control-Setup-v3.2.0.exe` → installs to `C:\Program Files\G-Control\`, creates shortcuts, sets GStreamer env automatically.
+Run `G-Control-Setup-v3.3.0.exe` → installs to `C:\Program Files\G-Control\`, creates shortcuts, sets GStreamer env automatically.
 First launch: Settings → Connection → enter SSH credentials → Apply.
 
 ### Build from source (developers)

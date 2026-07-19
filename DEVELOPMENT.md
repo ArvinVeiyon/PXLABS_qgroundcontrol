@@ -414,29 +414,41 @@ pip_size = 240x180
 bitrate = 2000K
 ```
 
-**How `vision_config_manager` works:**
-- **Legacy switch** (positional args): `vision_config_manager /dev/video0` — probes live V4L2
-  format without stopping the service (`v4l2-ctl --get-fmt-video`, `--get-parm`), updates
-  `[primary]` section, removes `[secondary]` if single device, restarts service.
+**How `vision_config_manager` works (v2.0.0, multi-camera — since G-Control v3.3.0):**
+- **`list [--json] [--all]`**: camera inventory. Each camera keyed by its **stable id**
+  (`/dev/v4l/by-id` symlink basename — survives boot renumbering), with current `/dev/videoN`,
+  hw name, user **alias** (stored in `/etc/vision_cameras.yaml`), supported `formats` map, and
+  `role_lock` (e.g. `autonomy` for the Orbbec — QGC shows ⚠ and warns). Default lists only
+  **streamable** cameras (offer MJPG/YUYV); `--all` adds depth/IR nodes (marked, not selectable).
+  `active` echoes what the conf currently points at. Full contract:
+  `vision_multicam_companion.md` in the Companion_Computer_Pxlabs repo.
+- **`set-alias <id|alias|dev> "<name>"`**: stores the alias companion-side — all GCS + RC see it.
+- **`apply <primary> [secondary]`**: selects the stream; args may be id, alias, or /dev/videoN.
+  Writes both `camera_id` (stable) and `camera_name` (resolved dev) to the conf.
+  **Guard:** refuses non-streamable devices (exit 1, reason on stdout) — a depth/IR selection
+  can no longer produce a silent black feed.
+- **Legacy switch** (positional args): `vision_config_manager /dev/video0` — still works, now
+  routed through the same resolve+guard path.
   Atomic write: writes to `/tmp/vision_streaming.conf` then `sudo cp` to destination.
-- **`set-cam-params`**: sets resolution/fps/format in config → restarts service.
+- **`set-cam-params`**: sets resolution/fps/format in config → restarts service (accepts id/alias).
 - **`list-details`**: returns full camera info (V4L2 formats, current settings, udevadm metadata).
 
-**G-Control → CLI → remote mapping:**
+**G-Control → CLI → remote mapping (v3.3.0):**
 
 | G-Control action | CLI args | Remote command |
 |-----------------|---------|----------------|
-| Front camera | `companion front-switch` | `sudo vision_config_manager /dev/video0` |
-| Bottom camera | `companion bottom-switch` | `sudo vision_config_manager /dev/video2` |
-| Split front→bottom | `companion split-front-bottom` | `sudo vision_config_manager /dev/video0 /dev/video2` |
-| Split bottom→front | `companion split-bottom-front` | `sudo vision_config_manager /dev/video2 /dev/video0` |
-| Query camera | `companion camera-query --device /dev/video0` | `sudo vision_config_manager list-details /dev/video0` |
-| Set params | `companion camera-params --device /dev/video0 --resolution 1920x1080 --fps 60 --format MJPG` | `sudo vision_config_manager set-cam-params /dev/video0 1920x1080 60 --format MJPG` |
+| Camera inventory (panels auto-fetch) | `companion camera-list [--all]` | `sudo vision_config_manager list --json [--all]` |
+| Rename camera | `companion camera-set-alias --id <id> --name "<alias>"` | `sudo vision_config_manager set-alias <id> '<alias>'` |
+| Set primary (+ optional PiP) | `companion camera-apply --primary <id> [--secondary <id>]` | `sudo vision_config_manager apply <id> [<id>]` |
+| Query camera | `companion camera-query --device <id\|alias\|dev>` | `sudo vision_config_manager list-details <arg>` |
+| Set params | `companion camera-params --device <id\|alias\|dev> --resolution 1920x1080 --fps 30 --format MJPG` | `sudo vision_config_manager set-cam-params <arg> 1920x1080 30 --format MJPG` |
+| *(legacy, kept for compat)* Front / Bottom / Splits | `companion front-switch` etc. | `sudo vision_config_manager /dev/video0` etc. — errors clearly if the device is gone |
 
 Also note: **RC CH9** on the drone triggers camera switching directly via `rc_control_node` (ROS2):
 - PWM 1012 → front (`/dev/video0`)
 - PWM 1514 → bottom (`/dev/video2`)
 - PWM 2014 → split/PiP
+- ⚠ still on the old hardcoded devices — Phase D (companion-side) migrates these to aliases.
 
 RC switching and G-Control switching both call `vision_config_manager` — they are equivalent paths.
 

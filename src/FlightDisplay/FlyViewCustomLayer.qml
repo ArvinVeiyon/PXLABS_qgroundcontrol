@@ -52,6 +52,14 @@ Item {
     property string _panelStatus: ""
     property bool   _panelBusy:   false   // a panel command is in flight
 
+    // Camera inventory (vision_config_manager v2 via `companion camera-list`)
+    property var    _cameras:         []     // [{id, dev, hw_name, alias, streamable, role_lock}]
+    property string _activePrimary:   ""     // stable id (or raw dev) from `active`
+    property string _activeSecondary: ""
+    property bool   _camListBusy:     false
+    property bool   _camListFetched:  false  // first fetch since app start done
+    property string _camStatus:       ""
+
     // Auto-clear status 2.5 s after a successful command
     Timer {
         id:       _panelStatusClearTimer
@@ -72,7 +80,7 @@ Item {
     readonly property real _rpMinH:  ScreenTools.defaultFontPixelHeight * 15
     readonly property real _rpHdrH:  ScreenTools.defaultFontPixelHeight * 2.5   // header height
     // Camera panel
-    readonly property real _camW:    ScreenTools.defaultFontPixelWidth  * 22
+    readonly property real _camW:    ScreenTools.defaultFontPixelWidth  * 28
     readonly property real _camBtnH: ScreenTools.defaultFontPixelHeight * 2.4
 
     // -----------------------------------------------------------------------
@@ -180,6 +188,80 @@ Item {
         req.failed.connect(function(errorText) { _root._panelStatus = "✗ Error: " + errorText })
         req.completeChanged.connect(function() { if (req.complete) _root._panelBusy = false })
         return req
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers — camera inventory
+    // -----------------------------------------------------------------------
+    function _camName(c) {
+        return (c.alias && c.alias.length > 0) ? c.alias : (c.hw_name || c.dev || c.id)
+    }
+
+    // `active` values may be a stable id or a raw /dev/videoN — match either.
+    function _camIsActive(c, activeKey) {
+        return activeKey.length > 0 && (activeKey === c.id || activeKey === c.dev)
+    }
+
+    function _refreshCameras(background) {
+        if (_camListBusy) return
+        var silent      = (background === true)   // polls fail quietly; buttons report
+        _camListBusy    = true
+        _camListFetched = true
+        if (!silent) _camStatus = "Loading cameras…"
+        var req = Pxlabs.companion.cameraList(silent)
+        req.succeeded.connect(function() {
+            // Output can carry SSH/sudo noise around the JSON — extract the object.
+            var t = req.output
+            var s = t.indexOf("{"), e = t.lastIndexOf("}")
+            if (s < 0 || e <= s) { if (!silent) _root._camStatus = "✗ No camera data"; return }
+            try {
+                var obj  = JSON.parse(t.substring(s, e + 1))
+                var cams = obj.cameras || []
+                _root._cameras         = cams
+                _root._activePrimary   = (obj.active && obj.active.primary)   ? obj.active.primary   : ""
+                _root._activeSecondary = (obj.active && obj.active.secondary) ? obj.active.secondary : ""
+                _root._camStatus       = (cams.length === 0 && !silent) ? "No streamable cameras" : ""
+            } catch (err) {
+                if (!silent) _root._camStatus = "✗ Bad camera list JSON"
+            }
+        })
+        req.failed.connect(function(errorText) { if (!silent) _root._camStatus = "✗ " + errorText })
+        req.completeChanged.connect(function() { if (req.complete) _root._camListBusy = false })
+    }
+
+    // RC CH9 switches cameras outside QGC (companion Phase D) — re-sync the
+    // ●/◪ markers periodically so the panel reflects reality, not just our
+    // own applies. Background priority: coalesced, yields to user commands.
+    Timer {
+        interval: 60000
+        repeat:   true
+        running:  true
+        onTriggered: _root._refreshCameras(true)
+    }
+
+    // Apply primary (optionally keeping/setting secondary), then re-sync `active`.
+    // Status goes to the camera panel's own line — guard refusals and role_lock
+    // warnings from the companion arrive on stdout and land there verbatim.
+    function _applyCamera(primaryId, secondaryId, label) {
+        _camStatus = "Applying " + label + "…"
+        var req = Pxlabs.companion.applyCamera(primaryId, secondaryId || "")
+        req.succeeded.connect(function() {
+            var t = req.output.trim()
+            _root._camStatus = (t.indexOf("WARNING") >= 0) ? t : ("✓ " + label)
+            _camStatusClearTimer.restart()
+            _root._refreshCameras(true)
+        })
+        req.failed.connect(function(errorText) {
+            var t = req.output.trim()
+            _root._camStatus = "✗ " + (t.length > 0 ? t : errorText)
+        })
+    }
+
+    Timer {
+        id:       _camStatusClearTimer
+        interval: 4000
+        repeat:   false
+        onTriggered: _root._camStatus = ""
     }
 
     // Background poll of relay WFB mode → parse SA/CA into _wfbMode.
@@ -732,46 +814,102 @@ Item {
                 }
             }
 
-            Rectangle { Layout.fillWidth: true; height: 1; color: Qt.rgba(0.3,0.6,1.0,0.3) }
+            // Divider + refresh
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: _pad * 0.5
 
-            // Row 1: Front / Bottom
-            RowLayout { Layout.fillWidth: true; spacing: _pad * 0.8
-                Rectangle { Layout.fillWidth: true; height: _camBtnH; radius: 4
-                    gradient: Gradient { orientation: Gradient.Horizontal
-                        GradientStop { position:0.0; color:fMa.pressed?"#1DC5D8":fMa.containsMouse?"#17A0B0":"#0C6070" }
-                        GradientStop { position:1.0; color:fMa.pressed?"#15A5B5":fMa.containsMouse?"#0E8090":"#084858" } }
-                    border.color: Qt.rgba(0.1,0.8,0.9,0.4); border.width: 1
-                    QGCLabel { anchors.centerIn:parent; text:"F-SW"; color:"white"; font.pointSize:ScreenTools.smallFontPointSize; font.bold:true }
-                    MouseArea { id:fMa; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
-                        onClicked: _runPanelCmd(Pxlabs.companion.switchCamera("front"), "Switching to front…", "✓ Front camera") } }
-                Rectangle { Layout.fillWidth: true; height: _camBtnH; radius: 4
-                    gradient: Gradient { orientation: Gradient.Horizontal
-                        GradientStop { position:0.0; color:bMa.pressed?"#1DC5D8":bMa.containsMouse?"#17A0B0":"#0C6070" }
-                        GradientStop { position:1.0; color:bMa.pressed?"#15A5B5":bMa.containsMouse?"#0E8090":"#084858" } }
-                    border.color: Qt.rgba(0.1,0.8,0.9,0.4); border.width: 1
-                    QGCLabel { anchors.centerIn:parent; text:"B-SW"; color:"white"; font.pointSize:ScreenTools.smallFontPointSize; font.bold:true }
-                    MouseArea { id:bMa; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
-                        onClicked: _runPanelCmd(Pxlabs.companion.switchCamera("bottom"), "Switching to bottom…", "✓ Bottom camera") } }
+                Rectangle { Layout.fillWidth: true; height: 1; color: Qt.rgba(0.3,0.6,1.0,0.3) }
+
+                Rectangle {
+                    width: ScreenTools.defaultFontPixelHeight * 1.3
+                    height: width; radius: 3
+                    color: camRefMa.pressed ? Qt.rgba(0.3,0.6,1.0,0.5)
+                         : camRefMa.containsMouse ? Qt.rgba(0.3,0.6,1.0,0.3) : Qt.rgba(0.3,0.6,1.0,0.12)
+                    QGCLabel {
+                        anchors.centerIn: parent
+                        text: "↻"; color: "#8BBFFF"
+                        font.pointSize: ScreenTools.smallFontPointSize
+                    }
+                    MouseArea {
+                        id: camRefMa; anchors.fill: parent
+                        hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        enabled: !_camListBusy
+                        onClicked: _root._refreshCameras(false)
+                    }
+                }
             }
 
-            // Row 2: Split
-            RowLayout { Layout.fillWidth: true; spacing: _pad * 0.8
-                Rectangle { Layout.fillWidth: true; height: _camBtnH; radius: 4
-                    gradient: Gradient { orientation: Gradient.Horizontal
-                        GradientStop { position:0.0; color:sfbMa.pressed?"#22B8A0":sfbMa.containsMouse?"#1A9880":"#0E6050" }
-                        GradientStop { position:1.0; color:sfbMa.pressed?"#1A9880":sfbMa.containsMouse?"#147860":"#0A4840" } }
-                    border.color: Qt.rgba(0.1,0.9,0.7,0.4); border.width: 1
-                    QGCLabel { anchors.centerIn:parent; text:"F/B-SW"; color:"white"; font.pointSize:ScreenTools.smallFontPointSize; font.bold:true }
-                    MouseArea { id:sfbMa; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
-                        onClicked: _runPanelCmd(Pxlabs.companion.switchCamera("split-fb"), "Switching to split F/B…", "✓ Split front/bottom") } }
-                Rectangle { Layout.fillWidth: true; height: _camBtnH; radius: 4
-                    gradient: Gradient { orientation: Gradient.Horizontal
-                        GradientStop { position:0.0; color:sbfMa.pressed?"#22B8A0":sbfMa.containsMouse?"#1A9880":"#0E6050" }
-                        GradientStop { position:1.0; color:sbfMa.pressed?"#1A9880":sbfMa.containsMouse?"#147860":"#0A4840" } }
-                    border.color: Qt.rgba(0.1,0.9,0.7,0.4); border.width: 1
-                    QGCLabel { anchors.centerIn:parent; text:"B/F-SW"; color:"white"; font.pointSize:ScreenTools.smallFontPointSize; font.bold:true }
-                    MouseArea { id:sbfMa; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
-                        onClicked: _runPanelCmd(Pxlabs.companion.switchCamera("split-bf"), "Switching to split B/F…", "✓ Split bottom/front") } }
+            // Dynamic camera list — one row per streamable camera.
+            // ● = active primary, ◪ = active secondary (PiP), ⚠ = role_lock.
+            Repeater {
+                model: _cameras
+
+                delegate: RowLayout {
+                    Layout.fillWidth: true
+                    spacing: _pad * 0.5
+
+                    property var  cam:    modelData
+                    property string camKey: cam.id || cam.dev || ""
+                    property bool isPri:  _root._camIsActive(cam, _root._activePrimary)
+                    property bool isSec:  _root._camIsActive(cam, _root._activeSecondary)
+
+                    QGCLabel {
+                        Layout.fillWidth: true
+                        text: (isPri ? "● " : isSec ? "◪ " : "") + _root._camName(cam)
+                              + (cam.role_lock ? " ⚠" : "")
+                        color: isPri ? "#7CFFB0" : isSec ? "#8BD0FF"
+                             : cam.role_lock ? "#FFC078" : "white"
+                        font.pointSize: ScreenTools.smallFontPointSize
+                        elide: Text.ElideRight
+                    }
+
+                    // PRI — make this camera the primary stream (keeps PiP if set)
+                    Rectangle {
+                        width: _pad * 5; height: _camBtnH * 0.85; radius: 4
+                        opacity: isPri ? 0.35 : 1.0
+                        gradient: Gradient { orientation: Gradient.Horizontal
+                            GradientStop { position:0.0; color:priMa.pressed?"#1DC5D8":priMa.containsMouse?"#17A0B0":"#0C6070" }
+                            GradientStop { position:1.0; color:priMa.pressed?"#15A5B5":priMa.containsMouse?"#0E8090":"#084858" } }
+                        border.color: Qt.rgba(0.1,0.8,0.9,0.4); border.width: 1
+                        QGCLabel { anchors.centerIn:parent; text:"PRI"; color:"white"; font.pointSize:ScreenTools.smallFontPointSize; font.bold:true }
+                        MouseArea { id:priMa; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
+                            enabled: !isPri && camKey.length > 0
+                            onClicked: {
+                                var sec = (!isSec && _root._activeSecondary.length > 0) ? _root._activeSecondary : ""
+                                _root._applyCamera(camKey, sec, _root._camName(cam))
+                            } }
+                    }
+
+                    // PIP — add as secondary over the current primary; ✕ removes it
+                    Rectangle {
+                        width: _pad * 5; height: _camBtnH * 0.85; radius: 4
+                        opacity: (isPri || (!isSec && _root._activePrimary.length === 0)) ? 0.35 : 1.0
+                        gradient: Gradient { orientation: Gradient.Horizontal
+                            GradientStop { position:0.0; color:pipMa.pressed?"#22B8A0":pipMa.containsMouse?"#1A9880":"#0E6050" }
+                            GradientStop { position:1.0; color:pipMa.pressed?"#1A9880":pipMa.containsMouse?"#147860":"#0A4840" } }
+                        border.color: Qt.rgba(0.1,0.9,0.7,0.4); border.width: 1
+                        QGCLabel { anchors.centerIn:parent; text: isSec ? "✕PIP" : "PIP"; color:"white"; font.pointSize:ScreenTools.smallFontPointSize; font.bold:true }
+                        MouseArea { id:pipMa; anchors.fill:parent; hoverEnabled:true; cursorShape:Qt.PointingHandCursor
+                            enabled: !isPri && _root._activePrimary.length > 0 && camKey.length > 0
+                            onClicked: {
+                                if (isSec) _root._applyCamera(_root._activePrimary, "", "PiP off")
+                                else       _root._applyCamera(_root._activePrimary, camKey,
+                                                              _root._camName(cam) + " PiP")
+                            } }
+                    }
+                }
+            }
+
+            // Status line (load errors, guard refusals, apply progress)
+            QGCLabel {
+                Layout.fillWidth: true
+                visible: _camStatus.length > 0
+                text: _camStatus
+                color: _camStatus.indexOf("✗") === 0 || _camStatus.indexOf("Error") >= 0
+                       ? "#FF9090" : _camStatus.indexOf("✓") === 0 ? "#7CFFB0" : "#C0C8D8"
+                font.pointSize: ScreenTools.smallFontPointSize
+                wrapMode: Text.WordWrap
             }
         }
     }
@@ -781,6 +919,7 @@ Item {
         Qt.callLater(function() {
             _restoreRpLayout()
             _restorePos()
+            _refreshCameras(true)   // background — silent if companion unreachable
         })
     }
     onWidthChanged:  { _clamp(cameraPanel); _savePos(); _updateRpX() }
