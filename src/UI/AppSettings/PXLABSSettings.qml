@@ -23,7 +23,13 @@ SettingsPage {
         outputArea.text = ""
         req.outputChanged.connect(function() { outputArea.text = req.output })
         req.succeeded.connect(function(exitCode) { _busy = false })
-        req.failed.connect(function(errorText)   { _busy = false; outputArea.text = qsTr("ERROR: ") + errorText })
+        req.failed.connect(function(errorText) {
+            _busy = false
+            // req.output already carries the real captured stdout/stderr — don't
+            // let the generic "exit 1" message stomp it (see camera-outage postmortem).
+            var body = req.output ? req.output.trim() : ""
+            outputArea.text = (body.length > 0 ? body + "\n\n" : "") + qsTr("ERROR: ") + errorText
+        })
         return req
     }
 

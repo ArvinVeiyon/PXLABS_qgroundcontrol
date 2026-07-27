@@ -60,7 +60,14 @@ SettingsPage {
         outputArea.text = ""
         req.outputChanged.connect(function() { outputArea.text = req.output })
         req.succeeded.connect(function(exitCode) { _busy = false })
-        req.failed.connect(function(errorText)   { _busy = false; outputArea.text = qsTr("ERROR: ") + errorText })
+        req.failed.connect(function(errorText) {
+            _busy = false
+            // req.output already carries the real captured stdout/stderr (e.g. the
+            // CLI's "Error: ..." line) — don't let the generic "exit 1" message
+            // stomp it, or the actual cause is invisible until someone re-runs by hand.
+            var body = req.output ? req.output.trim() : ""
+            outputArea.text = (body.length > 0 ? body + "\n\n" : "") + qsTr("ERROR: ") + errorText
+        })
         return req
     }
 
@@ -406,7 +413,12 @@ SettingsPage {
 
             QGCButton {
                 text:      qsTr("Apply")
-                enabled:   !_busy
+                // Only enabled once the inventory is loaded and a real camera is
+                // selected — otherwise _deviceKey() falls through to raw combo
+                // text, which can be a stale /dev/videoN the companion no longer
+                // owns (see camera-outage postmortem).
+                enabled:   !_busy && _cameras.length > 0
+                           && deviceCombo.currentIndex >= 0 && deviceCombo.currentIndex < _cameras.length
                 onClicked: _dispatch(Pxlabs.companion.setCamParams(_deviceKey(), resCombo.currentText, fpsCombo.currentText, fmtCombo.currentText))
             }
         }

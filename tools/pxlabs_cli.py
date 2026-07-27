@@ -695,22 +695,39 @@ done'""")
             if secondary:
                 cmd += f" {shlex.quote(secondary)}"
             return run_cmd(*ssh_exec(ip, port, username, password, cmd + " 2>&1"))
-        # Legacy path (--device): positional mode, same resolve+guard since v2
-        device = getattr(args, "device", "/dev/video0")
-        return run_cmd(*ssh_exec(ip, port, username, password, f"sudo vision_config_manager {device}"))
+        # Legacy path (--device): positional mode, same resolve+guard since v2.
+        # No fallback device — /dev/videoN is not a stable identity on the
+        # companion (Orbbec/rover-camera claim/release it depending on service
+        # state), so silently defaulting can hit the wrong node entirely.
+        device = getattr(args, "device", None)
+        if not device:
+            print("ERROR: camera-apply requires --primary (preferred) or --device "
+                  "(no default device)", file=sys.stderr)
+            return 1
+        return run_cmd(*ssh_exec(ip, port, username, password,
+                                  f"sudo vision_config_manager {shlex.quote(device)}"))
 
     if action == "camera-query":
-        device = getattr(args, "device", "/dev/video0")
+        device = getattr(args, "device", None)
+        if not device:
+            print("ERROR: camera-query requires --device (stable id/alias or "
+                  "/dev/videoN — no default)", file=sys.stderr)
+            return 1
         return run_cmd(*ssh_exec(ip, port, username, password,
-                                  f"sudo vision_config_manager list-details {device} 2>&1"))
+                                  f"sudo vision_config_manager list-details {shlex.quote(device)} 2>&1"))
 
     if action == "camera-params":
-        device     = getattr(args, "device",     "/dev/video0")
+        device = getattr(args, "device", None)
+        if not device:
+            print("ERROR: camera-params requires --device (stable id/alias or "
+                  "/dev/videoN — no default)", file=sys.stderr)
+            return 1
         resolution = getattr(args, "resolution", "1920x1080")
         fps        = getattr(args, "fps",        "60")
         fmt        = getattr(args, "format",     "MJPG")
-        return run_cmd(*ssh_exec(ip, port, username, password,
-                                  f"sudo vision_config_manager set-cam-params {device} {resolution} {fps} --format {fmt} 2>&1"))
+        cmd = (f"sudo vision_config_manager set-cam-params {shlex.quote(device)} "
+               f"{shlex.quote(resolution)} {shlex.quote(fps)} --format {shlex.quote(fmt)} 2>&1")
+        return run_cmd(*ssh_exec(ip, port, username, password, cmd))
 
     if action in ("capture-front", "capture-bottom"):
         front = action == "capture-front"
@@ -1009,7 +1026,8 @@ def main():
         "reboot", "shutdown", "ssh-terminal",
     ])
     p_comp.add_argument("--swap",       action="store_true", help="swap camera mapping")
-    p_comp.add_argument("--device",     default="/dev/video0", help="camera device path (or stable id/alias)")
+    p_comp.add_argument("--device",     default=None, help="camera device path or stable id/alias (no default — "
+                                                            "/dev/videoN is not a stable identity on the companion)")
     p_comp.add_argument("--resolution", default="1920x1080",   help="resolution e.g. 1920x1080")
     p_comp.add_argument("--fps",        default="60",          help="frames per second")
     p_comp.add_argument("--format",     default="MJPG",        help="pixel format e.g. MJPG or UYVY")
