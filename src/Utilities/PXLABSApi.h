@@ -63,6 +63,31 @@ public:
                      QStringLiteral("--timeout"), QString::number(timeoutS)});
     }
 
+    // Live TX radiotap tuning via wfb_tx_cmd — stbc/ldpc/mcs/short_gi are
+    // transmit-only flags, so these only ever affect what THIS node sends.
+    // Nothing is written to disk: a unit restart restores the cfg values, and
+    // the device self-reverts if the ground cannot re-confirm within revertAfterS.
+    Q_INVOKABLE PXLABSRequest* wfbCfgRadioGet()
+    {
+        return _run({QStringLiteral("wfb-config"), QStringLiteral("radio-get"),
+                     QStringLiteral("--target"), _name});
+    }
+
+    // Pass -1 for any field to leave it unchanged.
+    Q_INVOKABLE PXLABSRequest* wfbCfgRadioSet(int stbc = -1, int ldpc = -1,
+                                             int mcsIndex = -1, int shortGi = -1,
+                                             int revertAfterS = 30)
+    {
+        QStringList args { QStringLiteral("wfb-config"), QStringLiteral("radio-set"),
+                           QStringLiteral("--target"), _name,
+                           QStringLiteral("--revert-after"), QString::number(revertAfterS) };
+        if (stbc     >= 0) { args << QStringLiteral("--stbc")      << QString::number(stbc); }
+        if (ldpc     >= 0) { args << QStringLiteral("--ldpc")      << QString::number(ldpc); }
+        if (mcsIndex >= 0) { args << QStringLiteral("--mcs-index") << QString::number(mcsIndex); }
+        if (shortGi  >= 0) { args << QStringLiteral("--short-gi")  << QString::number(shortGi); }
+        return _run(args);
+    }
+
     // systemd services — `services <action> --target <node> [--service <name>]`
     Q_INVOKABLE PXLABSRequest* servicesRefresh()                 { return _svc(QStringLiteral("refresh")); }
     Q_INVOKABLE PXLABSRequest* serviceStart(const QString& name)   { return _svc(QStringLiteral("start"),   name); }

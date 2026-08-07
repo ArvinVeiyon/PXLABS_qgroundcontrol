@@ -200,7 +200,7 @@ WFB_CFG_CONFIRM  = "/run/wfb-cfg-confirm"
 WFB_TIER1 = {
     "common.wifi_txpower": (100, 3000),
     "base.mcs_index":      (0, 7),
-    "base.stbc":           (0, 1),
+    "base.stbc":           (0, 3),   # spatial streams; init_radiotap_header rejects >3
     "base.ldpc":           (0, 1),
     "video.fec_k":         (1, 12),
     "video.fec_n":         (2, 16),
@@ -214,6 +214,99 @@ WFB_TIER2 = {
     "base.bandwidth":      (20, 40),
 }
 WFB_ALL_PARAMS = {**WFB_TIER1, **WFB_TIER2}
+
+# ---------------------------------------------------------------------------
+# Live radio tuning via wfb_tx_cmd (no cfg edit, no service restart)
+#
+# stbc/ldpc/mcs_index/short_gi/bandwidth are TX-only radiotap flags: they shape
+# what THIS node transmits and say nothing about what it receives. wfb_tx keeps
+# them in a radiotap header that CMD_SET_RADIO rebuilds in place, so a change
+# applies immediately and a unit restart puts the cfg values back.
+#
+# Each stream is its own wfb_tx process with its own control port. Ports are
+# ephemeral unless control_port is pinned per stream in wifibroadcast.cfg.
+# ---------------------------------------------------------------------------
+WFB_TX_CMD        = "/usr/bin/wfb_tx_cmd"
+WFB_RADIO_CONFIRM = "/run/wfb-radio-confirm"
+WFB_STREAMS       = ("video", "mavlink", "tunnel")
+
+WFB_RADIO_RANGES = {
+    "stbc":      (0, 3),
+    "ldpc":      (0, 1),
+    "mcs_index": (0, 7),
+    "short_gi":  (0, 1),
+    "bandwidth": (20, 40),
+}
+
+
+def _wfb_control_ports(host, port, user, pw):
+    """{stream: control_port} for the running wfb_tx processes.
+
+    services.py logs one of these per stream at startup:
+        video use wfb_tx ports {0: 52807, 1: 53080}, control_port 34062
+        video use wfb_tx control_port 34062
+    Later lines overwrite earlier ones, so the newest boot wins.
+
+    Needs sudo where the login user is outside the adm/systemd-journal groups
+    (true on the relay, not on the companion) — otherwise journalctl silently
+    returns nothing at all rather than erroring.
+    """
+    units = "-u 'wifibroadcast@*' -u 'wifibroadcast-cluster@*'"
+    tail = f"--no-pager {units} 2>/dev/null | grep -a 'use wfb_tx' | tail -60"
+    ports = {}
+    # Plain "sudo " prefix on purpose: _sudo_wrap turns it into "sudo -S" and
+    # pipes the password in. A "-n" here would make sudo refuse to read it.
+    for journal in (f"sudo journalctl {tail}", f"journalctl {tail}"):
+        ok, out, _err, _st = ssh_exec(host, port, user, pw, journal)
+        if ok and out:
+            for line in out.splitlines():
+                m = re.search(r"(\w+) use wfb_tx (?:ports .*?, )?control_port (\d+)", line)
+                if m and m.group(1) in WFB_STREAMS:
+                    ports[m.group(1)] = int(m.group(2))
+        if ports:
+            break
+    return ports
+
+
+def _wfb_parse_radio(text):
+    """wfb_tx_cmd get_radio output -> {key: int}."""
+    vals = {}
+    for line in (text or "").splitlines():
+        m = re.match(r"\s*(\w+)\s*=\s*(-?\d+)\s*$", line)
+        if m:
+            vals[m.group(1)] = int(m.group(2))
+    return vals
+
+
+def _wfb_radio_args(vals):
+    """{'stbc': 1, ...} -> '-S 1 -L 0 -M 1 -B 20 -G long' for wfb_tx_cmd."""
+    parts = []
+    for key, flag in (("stbc", "-S"), ("ldpc", "-L"),
+                      ("mcs_index", "-M"), ("bandwidth", "-B")):
+        if key in vals:
+            parts += [flag, str(vals[key])]
+    if "short_gi" in vals:
+        parts += ["-G", "short" if vals["short_gi"] else "long"]
+    if vals.get("vht_mode"):
+        parts.append("-V")
+        if "vht_nss" in vals:
+            parts += ["-N", str(vals["vht_nss"])]
+    return " ".join(parts)
+
+
+def _wfb_radio_get(host, port, user, pw, streams):
+    """{stream: (values, control_port)} for every stream whose port resolved."""
+    ports = _wfb_control_ports(host, port, user, pw)
+    res = {}
+    for name in streams:
+        cport = ports.get(name)
+        if cport is None:
+            continue
+        ok, out, _err, _st = ssh_exec(host, port, user, pw,
+                                      f"{WFB_TX_CMD} {cport} get_radio")
+        if ok:
+            res[name] = (_wfb_parse_radio(out), cport)
+    return res
 
 
 def _wfb_target_conn(target, cfg):
@@ -435,6 +528,134 @@ def _wfb_set_both(args, cfg):
     return 1
 
 
+def _wfb_radio_action(args, cfg, target):
+    """radio-get / radio-set: live TX radiotap tuning, no cfg edit, no restart."""
+    host, port, user, pw = _wfb_target_conn(target, cfg)
+
+    streams = WFB_STREAMS if args.stream in (None, "all") else (args.stream,)
+    current = _wfb_radio_get(host, port, user, pw, streams)
+
+    if not current:
+        print("ERROR: no wfb_tx control ports found. Either the WFB unit is not "
+              "running, or the journal has rotated past the startup lines. Pin "
+              "control_port per stream in wifibroadcast.cfg to make this "
+              "deterministic (see [base] control_port in master.cfg).",
+              file=sys.stderr)
+        return 1
+
+    if args.action == "radio-get":
+        for name in streams:
+            if name not in current:
+                print(f"{name}: UNRESOLVED", flush=True)
+                continue
+            vals, cport = current[name]
+            fields = " ".join(f"{k}={vals[k]}" for k in
+                              ("stbc", "ldpc", "mcs_index", "short_gi",
+                               "bandwidth", "vht_mode", "vht_nss") if k in vals)
+            print(f"{name}: control_port={cport} {fields}", flush=True)
+        return 0
+
+    # ---- radio-set ----
+    edits = {}
+    for key in WFB_RADIO_RANGES:
+        val = getattr(args, key, None)
+        if val is None:
+            continue
+        lo, hi = WFB_RADIO_RANGES[key]
+        if not lo <= int(val) <= hi:
+            print(f"ERROR: {key}: {val} out of range [{lo}..{hi}]", file=sys.stderr)
+            return 1
+        edits[key] = int(val)
+    if not edits:
+        print("ERROR: nothing to set (use --stbc/--ldpc/--mcs-index/--short-gi/--bandwidth)",
+              file=sys.stderr)
+        return 1
+    if "bandwidth" in edits and edits["bandwidth"] not in (20, 40):
+        print("ERROR: bandwidth must be 20 or 40", file=sys.stderr)
+        return 1
+
+    revert_after = int(args.revert_after if args.revert_after is not None else 30)
+
+    # Bandwidth here only rewrites the radiotap header — it does NOT re-run
+    # `iw set channel`, so the card keeps transmitting on its current width.
+    # Use wfb-config set for a real bandwidth change.
+    if "bandwidth" in edits:
+        print("WARNING: --bandwidth changes the radiotap header only; the card's "
+              "channel width is untouched. Use 'wfb-config set' for a real change.",
+              file=sys.stderr)
+
+    # Build per-stream apply + revert command lists from the CURRENT values, so
+    # the revert restores exactly what was running rather than the cfg defaults.
+    apply_cmds, revert_cmds, planned = [], [], []
+    for name in streams:
+        if name not in current:
+            print(f"WARNING: {name}: control port unresolved, skipping", file=sys.stderr)
+            continue
+        vals, cport = current[name]
+        new_vals = dict(vals)
+        new_vals.update(edits)
+        apply_cmds.append(f"{WFB_TX_CMD} {cport} set_radio {_wfb_radio_args(new_vals)}")
+        revert_cmds.append(f"{WFB_TX_CMD} {cport} set_radio {_wfb_radio_args(vals)}")
+        planned.append((name, cport, vals, new_vals))
+
+    if not apply_cmds:
+        print("ERROR: no streams to apply to", file=sys.stderr)
+        return 1
+
+    for name, cport, old, new in planned:
+        changed = " ".join(f"{k}:{old.get(k)}->{new[k]}" for k in edits
+                           if old.get(k) != new[k]) or "(no change)"
+        print(f"{name}: control_port={cport} {changed}", flush=True)
+
+    # Arm a detached revert watchdog BEFORE applying: if the change kills the
+    # link we can never send the confirm, so the device restores itself.
+    # Same contract as wfb-cfg-apply, but purely in-memory (nothing on disk
+    # changes, so a unit restart is also a valid escape hatch).
+    if revert_after > 0:
+        watchdog = (
+            f"sudo rm -f {WFB_RADIO_CONFIRM}; "
+            f"sudo nohup setsid bash -c 'sleep {revert_after}; "
+            f"[ -e {WFB_RADIO_CONFIRM} ] || {{ " + "; ".join(revert_cmds) + "; }; "
+            f"rm -f {WFB_RADIO_CONFIRM}' >/dev/null 2>&1 </dev/null &"
+        )
+        ok, out, err, st = ssh_exec(host, port, user, pw, watchdog)
+        if not ok:
+            print("ERROR: could not arm revert watchdog — refusing to change radio",
+                  file=sys.stderr)
+            return run_cmd(ok, out, err, st)
+        print(f"REVERT_ARMED:{revert_after}s", flush=True)
+
+    ok, out, err, st = ssh_exec(host, port, user, pw, "; ".join(apply_cmds))
+    if not ok:
+        print("APPLY_FAILED (watchdog will restore)", file=sys.stderr)
+        return run_cmd(ok, out, err, st)
+
+    if revert_after <= 0:
+        print("APPLIED (no revert armed; restart the WFB unit to undo)", flush=True)
+        return 0
+
+    # Re-reach the device to prove the link survived, then keep the change.
+    deadline = time.time() + max(revert_after - 5, 5)
+    confirmed = False
+    while time.time() < deadline:
+        time.sleep(3)
+        if not is_reachable(host, port, timeout=3):
+            continue
+        cok, _o, _e, _s = ssh_exec(host, port, user, pw,
+                                   f"sudo touch {WFB_RADIO_CONFIRM}")
+        if cok:
+            confirmed = True
+            break
+
+    if confirmed:
+        print("APPLIED_CONFIRMED (live only — restart the WFB unit to undo)", flush=True)
+        return 0
+
+    print("NOT_CONFIRMED — device is reverting to the previous radio settings",
+          file=sys.stderr)
+    return 1
+
+
 def wfb_config_actions(args, cfg):
     action = args.action
 
@@ -450,6 +671,9 @@ def wfb_config_actions(args, cfg):
     if target not in ("companion", "relay"):
         print("ERROR: --target companion|relay required", file=sys.stderr)
         return 1
+    if action in ("radio-get", "radio-set"):
+        return _wfb_radio_action(args, cfg, target)
+
     host, port, user, pw = _wfb_target_conn(target, cfg)
 
     if action == "get":
@@ -1056,13 +1280,25 @@ def main():
     p_wfb = sub.add_parser("wfb-config")
     p_wfb.add_argument("action", choices=[
         "get", "params", "set", "set-both", "restore-default", "confirm",
-        "check-secondary"])
+        "check-secondary", "radio-get", "radio-set"])
     p_wfb.add_argument("--target", choices=["companion", "relay"])
     p_wfb.add_argument("--params", help="comma list: section.key=value "
                        "(e.g. base.mcs_index=2,video.fec_k=8)")
     p_wfb.add_argument("--danger-ack", action="store_true",
                        help="acknowledge a TIER2 (both-ends) change")
     p_wfb.add_argument("--timeout", help="watchdog rollback timeout seconds (default 60)")
+
+    # radio-get / radio-set — live TX radiotap tuning via wfb_tx_cmd
+    p_wfb.add_argument("--stream", choices=list(WFB_STREAMS) + ["all"],
+                       help="which wfb_tx stream to read/tune (default: all)")
+    p_wfb.add_argument("--stbc", type=int, help="spatial streams 0-3 (TX diversity)")
+    p_wfb.add_argument("--ldpc", type=int, help="1 to enable LDPC FEC, 0 to disable")
+    p_wfb.add_argument("--mcs-index", dest="mcs_index", type=int, help="MCS index 0-7")
+    p_wfb.add_argument("--short-gi", dest="short_gi", type=int, help="1 short GI, 0 long")
+    p_wfb.add_argument("--bandwidth", type=int, help="radiotap width 20 or 40 (header only)")
+    p_wfb.add_argument("--revert-after", dest="revert_after", type=int,
+                       help="seconds before auto-revert unless confirmed "
+                            "(default 30, 0 to disable)")
 
     # status — fast reachability check, no password needed
     sub.add_parser("status")

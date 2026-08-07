@@ -184,6 +184,19 @@ python pxlabs_cli.py relay reboot
 python pxlabs_cli.py relay shutdown
 python pxlabs_cli.py relay ssh-terminal
 
+# WFB config (wifibroadcast.cfg — watchdog-guarded, auto-rollback)
+python pxlabs_cli.py wfb-config get|params --target companion|relay
+python pxlabs_cli.py wfb-config set --target companion|relay --params base.stbc=1,video.fec_k=8 [--danger-ack] [--timeout 60]
+python pxlabs_cli.py wfb-config set-both --params common.wifi_channel=161 --danger-ack   # channel/bandwidth ONLY
+python pxlabs_cli.py wfb-config restore-default --target companion|relay
+python pxlabs_cli.py wfb-config check-secondary
+
+# WFB live radio tuning (wfb_tx_cmd — no cfg edit, no restart, self-reverting)
+#   stbc/ldpc/mcs/short_gi are TX-ONLY: they shape what THIS node sends.
+#   Drone values own the downlink, relay values own the uplink — never mirror them.
+python pxlabs_cli.py wfb-config radio-get --target companion|relay [--stream video|mavlink|tunnel|all]
+python pxlabs_cli.py wfb-config radio-set --target relay --stbc 1 --ldpc 0 --mcs-index 1 --revert-after 30
+
 # Services
 python pxlabs_cli.py services refresh --target companion|relay
 python pxlabs_cli.py services start|stop|restart|enable|disable --target companion|relay --service <name>
@@ -207,6 +220,59 @@ python pxlabs_cli.py config set \
 - `deploy_dlls.bat` creates `build_clean\lib\gstreamer-1.0` — required by GStreamer.cc for internal path resolution
 - `Launch-GControl.bat` sets `GST_PLUGIN_PATH` + `GST_REGISTRY_REUSE_PLUGIN_SCANNER=no`
 - For debug: use `Launch-GControl-Debug.bat` — writes `Release\gst_debug.log`
+
+---
+
+## Session Changes (2026-08-08 — WFB per-side RF split) *(unreleased)*
+
+Corrects a wrong model: rev 2 of the WFB editor applied every change to BOTH ends to
+"keep the configs identical". For the RF parameters that is actively harmful.
+
+### The finding
+
+`stbc`/`ldpc`/`mcs_index`/`short_gi`/`bandwidth` in `[base]` are **transmit-only radiotap
+flags** (`master.cfg`: "Radiotap flags for TX"); `services.py` passes `-S/-L/-M/-B/-G`
+only to `wfb_tx`, never `wfb_rx`. Confirmed on the live relay — its `wfb_rx` runs with no
+radio args at all, while its two uplink `wfb_tx` carry `-S 0 -L 0 -M 1 -B 20`. So the
+drone's values own the **downlink** and the relay's own the **uplink**; only
+`wifi_channel` and `bandwidth` must match. FEC is TX-side only too, and the GS runs no
+video TX (`gs_video` = `udp_direct_rx`), so relay video FEC is inert.
+
+Cluster mode does **not** ignore these: the server's `wfb_tx -d` (DISTRIBUTOR) builds the
+radiotap header, and nodes run `wfb_tx -I` (INJECTOR) which takes no radio options. The
+constraint is that one header is shared by all nodes — the weakest card decides. What
+cluster *does* drop is TX power for nodes declaring their own `wifi_txpower` (the CPE610
+node sets it to `None`).
+
+### Changed
+
+- `tools/pxlabs_cli.py`
+  - **NEW** `wfb-config radio-get` / `radio-set` driving `/usr/bin/wfb_tx_cmd`
+    (`--stream/--stbc/--ldpc/--mcs-index/--short-gi/--bandwidth/--revert-after`).
+    Arms a detached revert watchdog (`/run/wfb-radio-confirm`) *before* applying.
+  - Control-port discovery from the journal; needs `sudo` on the relay (its login user is
+    outside `adm`/`systemd-journal`, so `journalctl` silently returns nothing).
+  - **FIX** `base.stbc` range was `(0,1)`; it is a spatial-stream count `(0,3)` —
+    `init_radiotap_header` throws above 3.
+- `src/Utilities/PXLABSApi.h` — **NEW** `wfbCfgRadioGet()`,
+  `wfbCfgRadioSet(stbc, ldpc, mcsIndex, shortGi, revertAfterS)` (pass `-1` to leave a
+  field unchanged).
+- `src/UI/AppSettings/WFBConfig.qml` — restructured into **Drone TX (downlink)**,
+  **Ground TX (uplink)** and **link-wide channel/bandwidth**. Per-side Save, per-side
+  "Try Live (reverts in 30 s)", "Read Live Radio". Relay section shows standalone/cluster
+  and a cluster-specific warning. STBC is now a 0–3 combo, not a switch. No video FEC in
+  the uplink section.
+
+### Hardware note
+
+`ethtool -i` says the **relay card is `rtl88xxau_wfb` (AU)** despite its cfg comment
+saying `(8812eu)`, and its `wifi_txpower = 3000` uses the EU positive convention where
+`master.cfg` says AU wants negative. **Unverified — check.** Companion is 2× `rtl88x2eu`
+running video through `udp_proxy` (multi-card TX diversity already, separate from STBC).
+LDPC is still documented as 8812au-only in wfb-ng 25.4.27, so EU-only does not unlock it.
+
+**Status:** builds clean, `radio-get` verified against both devices. `radio-set` has
+**not** been run live yet, and the new UI is not user-verified.
 
 ---
 
