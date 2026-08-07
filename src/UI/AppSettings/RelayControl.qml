@@ -71,8 +71,11 @@ SettingsPage {
     }
 
     // Switch WFB mode, then refresh once it settles (regardless of outcome).
+    // wfbModeSwitch (not wfbSwitch) so the RF settings of the mode being left are
+    // snapshotted and the entered mode's profile restored — both modes share one
+    // wifibroadcast.cfg, so otherwise cluster inherits standalone's radio config.
     function _switchWfb(mode) {
-        var req = _dispatch(Pxlabs.relay.wfbSwitch(mode))
+        var req = _dispatch(Pxlabs.relay.wfbModeSwitch(mode))
         req.completeChanged.connect(function() {
             if (req.complete) Qt.callLater(function() { _dispatch(Pxlabs.relay.wfbRefresh()) })
         })

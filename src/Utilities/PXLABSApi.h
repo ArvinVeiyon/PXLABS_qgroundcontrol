@@ -73,6 +73,16 @@ public:
                      QStringLiteral("--target"), _name});
     }
 
+    // Which chipsets carry WFB on this node. Emits `WFB_CHIPS:AU|EU|...` and
+    // `LDPC_CAPABLE:yes|no` — LDPC is 8812au-only per master.cfg AND must be
+    // supported on both TX and RX, so a link is only LDPC-capable if BOTH
+    // nodes report yes.
+    Q_INVOKABLE PXLABSRequest* wfbCfgNicInfo()
+    {
+        return _run({QStringLiteral("wfb-config"), QStringLiteral("nic-info"),
+                     QStringLiteral("--target"), _name});
+    }
+
     // Pass -1 for any field to leave it unchanged.
     Q_INVOKABLE PXLABSRequest* wfbCfgRadioSet(int stbc = -1, int ldpc = -1,
                                              int mcsIndex = -1, int shortGi = -1,
@@ -222,6 +232,26 @@ public:
     {
         return _run({_name, QStringLiteral("wfb"), QStringLiteral("set-nics"),
                      QStringLiteral("--nics"), nics});
+    }
+
+    // Mode switch that carries per-mode RF profiles. wfb-rlyctl alone only
+    // enables/disables units — both modes share one wifibroadcast.cfg, so RF
+    // settings would otherwise follow you across the switch. This snapshots the
+    // mode being left and restores the one being entered (cluster defaults to
+    // the conservative stbc=0/ldpc=0/mcs=0 baseline on first use).
+    // Prefer this over wfbSwitch() for user-facing buttons.
+    // mode: "standalone" | "cluster"
+    Q_INVOKABLE PXLABSRequest* wfbModeSwitch(const QString& mode)
+    {
+        return _run({QStringLiteral("wfb-config"), QStringLiteral("mode-switch"),
+                     QStringLiteral("--target"), _name,
+                     QStringLiteral("--mode"),   mode});
+    }
+
+    Q_INVOKABLE PXLABSRequest* wfbModeProfiles()
+    {
+        return _run({QStringLiteral("wfb-config"), QStringLiteral("mode-profiles"),
+                     QStringLiteral("--target"), _name});
     }
 
     // mode: "standalone" | "cluster"

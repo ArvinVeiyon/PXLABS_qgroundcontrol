@@ -570,7 +570,10 @@ Item {
                             }
                             MouseArea { id: wfbSaMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    _runPanelCmd(Pxlabs.relay.wfbSwitch("standalone"), "Switching to Standalone…")
+                                    // wfbModeSwitch carries per-mode RF profiles — both modes
+                                    // share one wifibroadcast.cfg, so plain wfbSwitch would let
+                                    // cluster inherit standalone's radio settings.
+                                    _runPanelCmd(Pxlabs.relay.wfbModeSwitch("standalone"), "Switching to Standalone…")
                                     wfbCheckTimer.restart()
                                 }
                             }
@@ -592,7 +595,7 @@ Item {
                             }
                             MouseArea { id: wfbClMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                 onClicked: {
-                                    _runPanelCmd(Pxlabs.relay.wfbSwitch("cluster"), "Switching to Cluster…")
+                                    _runPanelCmd(Pxlabs.relay.wfbModeSwitch("cluster"), "Switching to Cluster…")
                                     wfbCheckTimer.restart()
                                 }
                             }

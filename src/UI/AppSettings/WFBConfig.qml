@@ -51,11 +51,49 @@ SettingsPage {
     // "standalone" | "cluster" | "" (unknown). Never persisted, always fetched.
     property string _relayMode: ""
 
+    // Which chipsets carry WFB on each node, and whether each end could do LDPC.
+    // master.cfg: LDPC is "available only for 8812au and must be supported both
+    // on TX and RX" — so LDPC is a property of the LINK, not of one card. A
+    // 2-card EU drone talking to an AU relay cannot use it in either direction.
+    property string _droneChips:   ""
+    property string _relayChips:   ""
+    property bool   _droneLdpcCap: false
+    property bool   _relayLdpcCap: false
+    property bool   _chipsKnown:   _droneChips !== "" && _relayChips !== ""
+    property bool   _linkLdpcOk:   _chipsKnown && _droneLdpcCap && _relayLdpcCap
+
+    // Named blocker for the warning text, so the user is told WHICH end fails.
+    function _ldpcBlocker() {
+        if (!_chipsKnown) return qsTr("card types not yet detected")
+        if (!_droneLdpcCap && !_relayLdpcCap)
+            return qsTr("neither end is AU (drone %1, relay %2)").arg(_droneChips).arg(_relayChips)
+        if (!_droneLdpcCap) return qsTr("the drone is %1, not AU").arg(_droneChips)
+        return qsTr("the relay is %1, not AU").arg(_relayChips)
+    }
+
     Component.onCompleted: {
         _loadSide(Pxlabs.companion, "drone")
         _loadSide(Pxlabs.relay,     "relay")
+        _loadNics(Pxlabs.companion, "drone")
+        _loadNics(Pxlabs.relay,     "relay")
         _loadRelayMode()
         _loadSecondaryCfg()
+    }
+
+    // Parse `WFB_CHIPS:` / `LDPC_CAPABLE:` from wfb-config nic-info.
+    function _loadNics(node, which) {
+        var req = node.wfbCfgNicInfo()
+        req.succeeded.connect(function() {
+            var chips = "", cap = false
+            var lines = req.output.split('\n')
+            for (var i = 0; i < lines.length; i++) {
+                var t = lines[i].trim()
+                if (t.indexOf("WFB_CHIPS:")   === 0) chips = t.substring(10).trim()
+                if (t.indexOf("LDPC_CAPABLE:") === 0) cap   = t.substring(13).trim() === "yes"
+            }
+            if (which === "drone") { _droneChips = chips; _droneLdpcCap = cap }
+            else                   { _relayChips = chips; _relayLdpcCap = cap }
+        })
     }
 
     readonly property var _channels: [ "36","40","44","48","52","56","60","64",
@@ -314,8 +352,26 @@ SettingsPage {
             QGCComboBox { id: dStbc; model: _stbc; sizeToContents: true }
             QGCLabel { text: qsTr("LDPC") }
             Switch { id: dLdpc }
+            QGCLabel {
+                text:  _droneChips === "" ? qsTr("(detecting cards…)")
+                                          : qsTr("cards: %1").arg(_droneChips)
+                color: QGroundControl.globalPalette.colorGrey
+                font.pointSize: ScreenTools.smallFontPointSize
+            }
             QGCLabel { text: qsTr("MCS:") }
             QGCComboBox { id: dMcs; model: _mcs; sizeToContents: true }
+        }
+
+        QGCLabel {
+            Layout.fillWidth: true
+            visible:          dLdpc.checked && !_linkLdpcOk
+            wrapMode:         Text.WordWrap
+            color:            QGroundControl.globalPalette.colorRed
+            font.pointSize:   ScreenTools.smallFontPointSize
+            text: qsTr("⚠ LDPC is documented as 8812AU-only and must be supported on BOTH " +
+                       "transmit and receive — here %1. A card that cannot do it will ignore " +
+                       "it; the real risk is a card that DOES apply it while the far end " +
+                       "cannot decode. Prove it with Try Live before saving.").arg(_ldpcBlocker())
         }
 
         QGCLabel {
@@ -418,8 +474,38 @@ SettingsPage {
             QGCComboBox { id: rStbc; model: _stbc; sizeToContents: true }
             QGCLabel { text: qsTr("LDPC") }
             Switch { id: rLdpc }
+            QGCLabel {
+                text:  _relayChips === "" ? qsTr("(detecting cards…)")
+                                          : qsTr("cards: %1").arg(_relayChips)
+                color: QGroundControl.globalPalette.colorGrey
+                font.pointSize: ScreenTools.smallFontPointSize
+            }
             QGCLabel { text: qsTr("MCS:") }
             QGCComboBox { id: rMcs; model: _mcs; sizeToContents: true }
+        }
+
+        QGCLabel {
+            Layout.fillWidth: true
+            visible:          rLdpc.checked && !_linkLdpcOk
+            wrapMode:         Text.WordWrap
+            color:            QGroundControl.globalPalette.colorRed
+            font.pointSize:   ScreenTools.smallFontPointSize
+            text: qsTr("⚠ LDPC is documented as 8812AU-only and must be supported on BOTH " +
+                       "transmit and receive — here %1. A card that cannot do it will ignore " +
+                       "it; the real risk is a card that DOES apply it while the far end " +
+                       "cannot decode. Prove it with Try Live before saving.").arg(_ldpcBlocker())
+        }
+
+        // Only local cards are probed; a cluster's remote nodes are not reachable
+        // from here, so the verdict above covers the relay's own card only.
+        QGCLabel {
+            Layout.fillWidth: true
+            visible:          _relayMode === "cluster"
+            wrapMode:         Text.WordWrap
+            color:            QGroundControl.globalPalette.colorGrey
+            font.pointSize:   ScreenTools.smallFontPointSize
+            text: qsTr("Card detection covers the relay's own NIC only — remote cluster " +
+                       "nodes (e.g. the CPE610) are not probed and may be less capable.")
         }
 
         // In cluster mode the server builds ONE radiotap header and ships it to
@@ -433,12 +519,15 @@ SettingsPage {
             wrapMode:         Text.WordWrap
             font.pointSize:   ScreenTools.smallFontPointSize
             color:            QGroundControl.globalPalette.colorOrange
-            text: qsTr("Cluster mode: one radiotap header is shared by every cluster node — " +
-                       "these cannot be set per node, so the least capable card decides. " +
-                       "With a mixed cluster (EU card + CPE610/ath9k), keep STBC and LDPC off " +
-                       "unless a live test proves otherwise. TX power below does NOT reach " +
-                       "nodes that declare their own wifi_txpower — the CPE610 node sets it " +
-                       "to None, so its power is controlled on the node itself.")
+            text: qsTr("Cluster mode: one radiotap header is built here and shared by every " +
+                       "node, so these cannot be set per node. A node whose radio cannot do a " +
+                       "flag generally ignores it rather than failing, so the setting simply " +
+                       "takes effect only on the nodes that support it — expect uneven " +
+                       "behaviour across a mixed cluster, not a hard break. The failure that " +
+                       "does bite is a node which DOES apply LDPC while the far end cannot " +
+                       "decode it. TX power below does NOT reach nodes that declare their own " +
+                       "wifi_txpower — the CPE610 node sets it to None, so its power is set " +
+                       "on the node itself.")
         }
 
         RowLayout {

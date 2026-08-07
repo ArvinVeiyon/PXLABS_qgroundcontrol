@@ -63,10 +63,18 @@ and hands it to `RemoteTransmitter`; cluster nodes run `wfb_tx -I <port>` (INJEC
 whose usage line accepts **no radio options at all** and simply injects the bytes it
 receives.
 
-The real constraint is therefore: **one radiotap header is shared by every cluster node
-and cannot be set per node.** The least capable card decides what is safe. With a mixed
-cluster (EU card + CPE610/ath9k) keep STBC and LDPC off unless a live test proves
-otherwise — which is why the relay already ships `stbc = 0, ldpc = 0`.
+The real constraint is therefore: **one radiotap header is built on the relay and shared
+by every cluster node — it cannot be set per node.**
+
+What happens at each node is then up to its driver. A node whose radio cannot do a given
+flag generally **ignores it rather than failing** — for the CPE610 that is mac80211's
+`ieee80211_parse_tx_radiotap()`, which handles the MCS/STBC/LDPC bits and degrades rather
+than erroring. So in a mixed cluster the practical effect is **uneven behaviour across
+nodes**, not a hard break: the setting takes effect only where it is supported.
+
+The failure that actually bites is the opposite direction — a node that **does** apply
+LDPC while the far end cannot decode it. That is why LDPC is a link-wide property, and
+why the relay ships `stbc = 0, ldpc = 0` as the safe baseline.
 
 What cluster mode *does* silently drop is **TX power**: `cluster.py` emits
 `iw dev … set txpower` only `{% if txpower[wlan] not in (None, 'off') %}`, and the
@@ -75,6 +83,43 @@ relay's local card and never reaches that node.
 
 The UI reads the current mode from `Pxlabs.relay.wfbRefresh()` (the `SA:`/`CA:` lines)
 and shows the cluster warning only when it applies.
+
+## Per-mode RF profiles (rev 3)
+
+`wfb-rlyctl use-standalone` / `use-cluster` **only enable and disable systemd units** —
+read the script, it does nothing else. Both modes therefore read the **same**
+`/etc/wifibroadcast.cfg`, so RF settings follow you across a mode switch. That is wrong
+for this fleet: standalone is a single card that can run a richer radio config, while
+cluster spans mixed radios (incl. the CPE610/ath9k) and wants the conservative baseline.
+
+`wfb-config mode-switch` closes that gap:
+
+```
+pxlabs_cli wfb-config mode-switch  --target relay --mode cluster|standalone
+pxlabs_cli wfb-config mode-profiles --target relay      # read-only, shows both profiles
+```
+
+1. Snapshots the RF params of the mode being **left** into `/etc/wfb-profile.<mode>`.
+2. Restores the profile of the mode being **entered**; on first use falls back to
+   built-in defaults.
+3. Backs the config up to `/etc/wifibroadcast.cfg.premode`, installs the new one, then
+   calls `wfb-rlyctl use-<mode>` — one restart, which picks up the new config.
+
+| Mode | Default on first entry |
+|---|---|
+| `cluster` | `stbc=0, ldpc=0, mcs_index=0` — all-card-compatible; MCS 0 is field-proven here and the uplink only carries ~200 kbit/s, so the lower rate costs nothing |
+| `standalone` | none — keep whatever is configured |
+
+Profiles cover `base.stbc`, `base.ldpc`, `base.mcs_index`, `common.wifi_txpower`.
+**`wifi_channel` and `bandwidth` are deliberately excluded** — they must match the drone,
+and moving them on a mode switch would break the link with no recovery path.
+
+There is no wfb-cfg-apply watchdog on this path: the unit is being swapped anyway, and the
+relay stays reachable over the local network independently of the WFB link. The rollback
+copy at `/etc/wifibroadcast.cfg.premode` is the safety net.
+
+Both UI mode buttons (`RelayControl.qml`, FlyView panel) route through
+`Pxlabs.relay.wfbModeSwitch()`. Plain `wfbSwitch()` remains for the bare unit flip.
 
 ## Live tuning — `wfb_tx_cmd` (rev 3)
 
@@ -141,6 +186,27 @@ not, and `rtw_tx_pwr_idx_override = 0` confirms no override is active here.
 Settling it requires **measurement, not inspection**: compare the drone's received RSSI
 with `-3000` vs `3000`. Raising real output power can cook the card, so treat this as a
 deliberate bench test, not a config tweak.
+
+#### Why the drone's RSSI is so high — and why it invalidates a close-range test
+
+Bench readings of **−27 / −28 dBm** are simply short range plus high power. Free-space loss
+at 5805 MHz is ~48 dB at 1 m and ~57 dB at 3 m; with a 30 dBm transmitter and a few dBi at
+each antenna, −27 dBm lands almost exactly where you would predict for a few metres of
+separation. Nothing is wrong.
+
+But it makes a close-range A/B test **unreliable**, for two reasons:
+
+- At −28 dBm you are ~70 dB above sensitivity, so nothing about packet loss, FEC recovery
+  or throughput will move. Only the RSSI number can answer the question.
+- That RSSI number is itself near the top of the reporting range, where receiver AGC
+  compresses and can even desensitise. A saturated front end may report nearly the same
+  RSSI for two genuinely different transmit powers — which would make `3000` and `-3000`
+  look identical even if the PA output differs.
+
+**So: add distance (or attenuation) until the drone reads roughly −60 to −70 dBm before
+comparing.** In that range RSSI tracks transmit power close to linearly and a real
+difference shows up plainly. Testing nose-to-nose at 30 dBm is the one setup most likely
+to produce a false "no difference".
 
 > ### ⚠ The sign belongs to the CARD — flip it when the card changes
 >

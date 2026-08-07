@@ -309,6 +309,204 @@ def _wfb_radio_get(host, port, user, pw, streams):
     return res
 
 
+# Chipset families we can recognise from the driver name. LDPC matters here:
+# master.cfg (still true in 25.4.27) says it is "Currently available only for
+# 8812au and must be supported both on TX and RX" — so it is a property of the
+# whole link, not of one card.
+WFB_CHIP_FAMILIES = (
+    ("rtl88xxau", "AU"),     # rtl88xxau_wfb — RTL8812AU
+    ("8812au",    "AU"),
+    ("rtl88x2eu", "EU"),     # RTL8812EU / RTL8822EU
+    ("8812eu",    "EU"),
+    ("ath9k",     "ATH9K"),  # CPE510/610 and friends
+)
+
+
+def _wfb_chip_family(driver):
+    d = (driver or "").lower()
+    for needle, family in WFB_CHIP_FAMILIES:
+        if needle in d:
+            return family
+    return "UNKNOWN"
+
+
+def _wfb_nic_info(host, port, user, pw):
+    """[(iface, driver, family, mode)] for local wl* interfaces.
+
+    Only monitor-mode cards are actually carrying WFB traffic; a managed card
+    (e.g. the Pi's onboard brcmfmac) is listed but should not drive the verdict.
+    """
+    cmd = ("for i in $(ls /sys/class/net 2>/dev/null | grep -E '^wl'); do "
+           "  d=$(ethtool -i \"$i\" 2>/dev/null | awk '/^driver:/{print $2}'); "
+           "  t=$(iw dev \"$i\" info 2>/dev/null | awk '/^\\ttype/{print $2}'); "
+           "  echo \"$i|${d:-unknown}|${t:-unknown}\"; done")
+    ok, out, _err, _st = ssh_exec(host, port, user, pw, cmd)
+    nics = []
+    if ok and out:
+        for line in out.splitlines():
+            parts = line.strip().split("|")
+            if len(parts) == 3 and parts[0]:
+                iface, driver, mode = parts
+                nics.append((iface, driver, _wfb_chip_family(driver), mode))
+    return nics
+
+
+# ---------------------------------------------------------------------------
+# Per-mode RF profiles (relay standalone vs cluster)
+#
+# wfb-rlyctl use-standalone/use-cluster ONLY enable/disable systemd units — both
+# modes read the SAME /etc/wifibroadcast.cfg. So RF settings follow you across a
+# mode switch, which is wrong here: standalone is a single card that can run a
+# faster/richer radio config, while cluster spans mixed radios (incl. the
+# CPE610/ath9k) and wants the conservative all-cards baseline.
+#
+# We snapshot the mode you leave and restore the mode you enter.
+# wifi_channel/bandwidth are deliberately NOT part of a profile: they must match
+# the drone, and changing them on a mode switch would break the link silently.
+# ---------------------------------------------------------------------------
+WFB_PROFILE_KEYS = ("base.stbc", "base.ldpc", "base.mcs_index", "common.wifi_txpower")
+WFB_PROFILE_PATH = "/etc/wfb-profile.%s"          # % mode
+WFB_PREMODE_BAK  = "/etc/wifibroadcast.cfg.premode"
+
+# Used only the first time a mode is entered, before a profile exists.
+WFB_MODE_DEFAULTS = {
+    # Mixed cluster: stbc/ldpc off for all-card compatibility (upstream uses the
+    # same reasoning for [bind_base]); MCS 0 is field-proven here and the uplink
+    # only carries ~200 kbit/s, so the lower rate costs nothing.
+    "cluster":    {"base.stbc": 0, "base.ldpc": 0, "base.mcs_index": 0},
+    # Standalone: no opinion — keep whatever is already configured.
+    "standalone": {},
+}
+
+
+def _wfb_relay_mode(host, port, user, pw):
+    """'standalone' | 'cluster' | None, from which unit is actually active."""
+    cmd = ("sa=$(systemctl is-active wifibroadcast@gs.service 2>/dev/null); "
+           "ca=$(systemctl is-active wifibroadcast-cluster@gs.service 2>/dev/null); "
+           'echo "SA:$sa CA:$ca"')
+    ok, out, _err, _st = ssh_exec(host, port, user, pw, cmd)
+    if not ok or not out:
+        return None
+    sa = "SA:active" in out
+    ca = "CA:active" in out
+    if ca and not sa:
+        return "cluster"
+    if sa:
+        return "standalone"
+    return None
+
+
+def _wfb_profile_read(host, port, user, pw, mode):
+    """{section.key: value} from the device's saved profile, {} if none."""
+    path = WFB_PROFILE_PATH % mode
+    ok, out, _err, _st = ssh_exec(host, port, user, pw,
+                                  f"cat {path} 2>/dev/null || true")
+    vals = {}
+    if ok and out:
+        for line in out.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            if k in WFB_PROFILE_KEYS:
+                vals[k] = v.strip()
+    return vals
+
+
+def _wfb_profile_write(host, port, user, pw, mode, params):
+    """Snapshot the RF subset of `params` into the device's profile for `mode`."""
+    lines = [f"# wfb RF profile for {mode} mode — written by pxlabs_cli",
+             "# channel/bandwidth are intentionally excluded (must match the drone)"]
+    for key in WFB_PROFILE_KEYS:
+        if key in params:
+            lines.append(f"{key}={params[key]}")
+    body = "\n".join(lines) + "\n"
+    path = WFB_PROFILE_PATH % mode
+    tmp = f"/tmp/wfb-profile.{mode}"
+    if not sftp_put_text(host, port, user, pw, body, tmp):
+        return False
+    ok, _o, _e, _s = ssh_exec(host, port, user, pw, f"sudo cp {tmp} {path}")
+    return ok
+
+
+def _wfb_mode_switch(args, cfg):
+    """Snapshot the current mode's RF settings, restore the target mode's, switch."""
+    target_mode = args.mode
+    if target_mode not in ("standalone", "cluster"):
+        print("ERROR: --mode standalone|cluster required", file=sys.stderr)
+        return 1
+
+    host, port, user, pw = _wfb_target_conn("relay", cfg)
+
+    current = _wfb_relay_mode(host, port, user, pw)
+    if current is None:
+        print("ERROR: could not determine the relay's current WFB mode", file=sys.stderr)
+        return 1
+    print(f"MODE:{current} -> {target_mode}", flush=True)
+
+    ok, cfg_text, err, st = ssh_exec(host, port, user, pw, f"cat {WFB_CFG_PATH}")
+    if not ok:
+        return run_cmd(ok, cfg_text, err, st)
+    live = _wfb_extract_params(cfg_text)
+
+    # 1. Remember the mode we are leaving.
+    if current != target_mode:
+        if _wfb_profile_write(host, port, user, pw, current, live):
+            saved = ", ".join(f"{k}={live[k]}" for k in WFB_PROFILE_KEYS if k in live)
+            print(f"SAVED_PROFILE:{current} [{saved}]", flush=True)
+        else:
+            print(f"WARNING: could not save the {current} profile — continuing",
+                  file=sys.stderr)
+
+    # 2. Work out what the target mode should look like.
+    wanted = _wfb_profile_read(host, port, user, pw, target_mode)
+    source = "profile"
+    if not wanted:
+        wanted = {k: str(v) for k, v in WFB_MODE_DEFAULTS[target_mode].items()}
+        source = "defaults"
+    edits = {k: v for k, v in wanted.items()
+             if k in live and str(v) != str(live[k])}
+
+    if edits:
+        print(f"RESTORE_FROM:{source} " +
+              " ".join(f"{k}:{live[k]}->{v}" for k, v in edits.items()), flush=True)
+        try:
+            spec = ",".join(f"{k}={v}" for k, v in edits.items())
+            new_text = _wfb_cfg_edit(cfg_text, _wfb_parse_params(spec))
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 1
+        # No wfb-cfg-apply watchdog here: the unit is about to be swapped anyway,
+        # and the relay stays reachable over the local network independently of
+        # the WFB link. Keep a rollback copy instead.
+        ok, _o, _e, _s = ssh_exec(host, port, user, pw,
+                                  f"sudo cp {WFB_CFG_PATH} {WFB_PREMODE_BAK}")
+        if not ok:
+            print("ERROR: could not back up the config — aborting", file=sys.stderr)
+            return 1
+        if not sftp_put_text(host, port, user, pw, new_text, "/tmp/wifibroadcast.cfg.new"):
+            return 1
+        ok, o, e, s = ssh_exec(host, port, user, pw,
+                               f"sudo cp /tmp/wifibroadcast.cfg.new {WFB_CFG_PATH}")
+        if not ok:
+            print("ERROR: could not install the config — aborting", file=sys.stderr)
+            return run_cmd(ok, o, e, s)
+    else:
+        print(f"RESTORE_FROM:{source} (nothing to change)", flush=True)
+
+    # 3. Flip the unit. This restarts WFB, which picks up the config above.
+    ok, o, e, s = ssh_exec(host, port, user, pw,
+                           f"sudo {WFB_RLYCTL} use-{target_mode}")
+    if not ok:
+        print(f"SWITCH_FAILED — config rollback available at {WFB_PREMODE_BAK}",
+              file=sys.stderr)
+        return run_cmd(ok, o, e, s)
+    print(o.strip() if o else "", flush=True)
+    print(f"MODE_ACTIVE:{target_mode}", flush=True)
+    return 0
+
+
 def _wfb_target_conn(target, cfg):
     """(host, port, username, password) for companion or relay."""
     if target == "relay":
@@ -667,12 +865,46 @@ def wfb_config_actions(args, cfg):
     if action == "set-both":
         return _wfb_set_both(args, cfg)
 
+    if action == "mode-switch":
+        return _wfb_mode_switch(args, cfg)
+
+    if action == "mode-profiles":
+        host, port, user, pw = _wfb_target_conn("relay", cfg)
+        cur = _wfb_relay_mode(host, port, user, pw)
+        print(f"CURRENT_MODE:{cur or 'unknown'}", flush=True)
+        for mode in ("standalone", "cluster"):
+            saved = _wfb_profile_read(host, port, user, pw, mode)
+            if saved:
+                print(f"{mode}: " + " ".join(f"{k}={v}" for k, v in sorted(saved.items())),
+                      flush=True)
+            else:
+                dflt = WFB_MODE_DEFAULTS[mode]
+                shown = (" ".join(f"{k}={v}" for k, v in sorted(dflt.items()))
+                         or "(keep current)")
+                print(f"{mode}: (no profile yet — would use defaults: {shown})", flush=True)
+        return 0
+
     target = args.target
     if target not in ("companion", "relay"):
         print("ERROR: --target companion|relay required", file=sys.stderr)
         return 1
     if action in ("radio-get", "radio-set"):
         return _wfb_radio_action(args, cfg, target)
+
+    if action == "nic-info":
+        host, port, user, pw = _wfb_target_conn(target, cfg)
+        nics = _wfb_nic_info(host, port, user, pw)
+        if not nics:
+            print("ERROR: no wireless interfaces found", file=sys.stderr)
+            return 1
+        for iface, driver, family, mode in nics:
+            print(f"{iface} driver={driver} chip={family} mode={mode}", flush=True)
+        # Only monitor-mode cards carry WFB. LDPC is AU-only per master.cfg.
+        wfb = [n for n in nics if n[3] == "monitor"] or nics
+        fams = sorted({n[2] for n in wfb})
+        print(f"WFB_CHIPS:{','.join(fams)}", flush=True)
+        print(f"LDPC_CAPABLE:{'yes' if fams == ['AU'] else 'no'}", flush=True)
+        return 0
 
     host, port, user, pw = _wfb_target_conn(target, cfg)
 
@@ -1280,7 +1512,10 @@ def main():
     p_wfb = sub.add_parser("wfb-config")
     p_wfb.add_argument("action", choices=[
         "get", "params", "set", "set-both", "restore-default", "confirm",
-        "check-secondary", "radio-get", "radio-set"])
+        "check-secondary", "radio-get", "radio-set", "nic-info",
+        "mode-switch", "mode-profiles"])
+    p_wfb.add_argument("--mode", choices=["standalone", "cluster"],
+                       help="mode-switch: target relay WFB mode")
     p_wfb.add_argument("--target", choices=["companion", "relay"])
     p_wfb.add_argument("--params", help="comma list: section.key=value "
                        "(e.g. base.mcs_index=2,video.fec_k=8)")

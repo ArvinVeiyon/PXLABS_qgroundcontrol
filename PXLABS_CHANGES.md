@@ -191,6 +191,14 @@ python pxlabs_cli.py wfb-config set-both --params common.wifi_channel=161 --dang
 python pxlabs_cli.py wfb-config restore-default --target companion|relay
 python pxlabs_cli.py wfb-config check-secondary
 
+# WFB card detection (LDPC is 8812au-only AND needs both ends)
+python pxlabs_cli.py wfb-config nic-info --target companion|relay   # -> WFB_CHIPS: / LDPC_CAPABLE:
+
+# WFB per-mode RF profiles (wfb-rlyctl alone does NOT swap configs — both modes
+# share one wifibroadcast.cfg, so cluster would inherit standalone's radio)
+python pxlabs_cli.py wfb-config mode-profiles --target relay                    # read-only
+python pxlabs_cli.py wfb-config mode-switch --target relay --mode cluster|standalone
+
 # WFB live radio tuning (wfb_tx_cmd — no cfg edit, no restart, self-reverting)
 #   stbc/ldpc/mcs/short_gi are TX-ONLY: they shape what THIS node sends.
 #   Drone values own the downlink, relay values own the uplink — never mirror them.
