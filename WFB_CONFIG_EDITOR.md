@@ -115,11 +115,71 @@ wfb_tx processes via wfb_tx_cmd utility").
 | Companion | `wlx8c86dd5beed9` | `rtl88xxau_wfb` (AU) — not used by WFB |
 | Relay | `wlx00c0cab6db3b` | `rtl88xxau_wfb` (**AU**) |
 
-Two things the configs get wrong:
+The relay cfg comments its card as `(8812eu)`. That is **wrong** — `lsusb` reports
+`0bda:8812 Realtek RTL8812AU 802.11a/b/g/n/ac 2T2R`, driver `rtl88xxau_wfb`.
 
-- The relay cfg comments its card as `(8812eu)`; it is actually the **AU** driver.
-- The relay sets `wifi_txpower = 3000` (positive = EU convention). `master.cfg` says AU
-  expects **negative** (`-3000` for 30 dBm). **Suspect — verify.**
+### Relay TX power — measured 2026-08-08
+
+`wifi_txpower = 3000` uses the **EU positive convention on an AU card**; `master.cfg` says
+AU wants `-dBm * 100` (`-3000` for 30 dBm). What actually happens:
+
+| Check | Result |
+|---|---|
+| `iw dev … set txpower fixed 3000` at startup | ran, **no error** in the journal |
+| `iw dev … info` (cfg80211 stored) | `txpower 30.00 dBm` |
+| `iwconfig` (driver's own view) | `Tx-Power=30 dBm` |
+| Regdomain BO, 5735–5835 MHz | max **30 dBm** — ch161 (5805) sits at the cap |
+| `/sys/module/88XXau_wfb/parameters/rtw_tx_pwr_idx_override` | `0` — override **not** engaged |
+| `rtw_tx_pwr_by_rate` | `1` — per-rate power table in use |
+
+So this is **not** visibly broken: both cfg80211 and the driver report the requested
+30 dBm, which is exactly the regulatory ceiling for this band. The open question is
+whether the normal (positive) path actually drives the PA to 30 dBm, or merely records
+it — the negative manual-override path exists precisely because on some AU cards it does
+not, and `rtw_tx_pwr_idx_override = 0` confirms no override is active here.
+
+Settling it requires **measurement, not inspection**: compare the drone's received RSSI
+with `-3000` vs `3000`. Raising real output power can cook the card, so treat this as a
+deliberate bench test, not a config tweak.
+
+> ### ⚠ The sign belongs to the CARD — flip it when the card changes
+>
+> The fleet runs both AU and EU cards; the relay is on AU for now and moves to EU later.
+> Set the value for whichever card is actually fitted:
+>
+> | Relay card | Correct `wifi_txpower` for 30 dBm | `iwconfig` then shows |
+> |---|---|---|
+> | RTL8812**AU** (today, testing) | `-3000` | `Tx-Power=-30 dBm` |
+> | RTL8812**EU** (planned) | `3000` | `Tx-Power=30 dBm` |
+>
+> **Put the flip on the card-swap checklist**, together with the `(8812eu)` comment. A
+> wrong txpower does not crash anything — it fails quietly as lost range, so nothing will
+> tell you it is wrong.
+
+### Reading `iwconfig` correctly (confirmed on hardware 2026-08-08)
+
+`iwconfig` **echoes the configured value**, converted mBm → dBm. It is *not* a measurement:
+
+- `wifi_txpower = 3000`  → `Tx-Power=30 dBm`
+- `wifi_txpower = -3000` → `Tx-Power=-30 dBm`
+
+A displayed `-30 dBm` on an AU card is **expected and correct**, not a fault. A literal
+−30 dBm would be roughly a microwatt and the uplink would be dead; it plainly is not, which
+shows the patched AU driver routes the negative value through its own override path
+instead of applying it at face value.
+
+### "It looks stuck" — it is applied only at service start
+
+`init_wlans()` runs `iw dev <wlan> set txpower fixed <value>` **once, when the WFB unit
+starts**. Editing `wifibroadcast.cfg` by hand therefore changes nothing until that unit
+restarts, which is why a hand-edited value appears frozen. Applying from G-Control goes
+through `wfb-cfg-apply`, which restarts the unit — so the change lands. If you edit on the
+device, restart the unit yourself or the old value stays live.
+
+**LDPC has a shelf life here too.** `master.cfg` says LDPC is 8812au-only. Any LDPC result
+measured against today's **AU relay** therefore may not survive the move to an EU relay —
+the AU end is exactly the end that might be making it work. Re-test LDPC after the swap
+rather than trusting a result taken now.
 
 The drone's video runs through `udp_proxy` across its two cards, so it already has
 **multi-card TX diversity** (best card chosen by RSSI). STBC is a separate, chain-level

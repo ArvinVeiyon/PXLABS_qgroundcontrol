@@ -265,9 +265,32 @@ node sets it to `None`).
 
 ### Hardware note
 
-`ethtool -i` says the **relay card is `rtl88xxau_wfb` (AU)** despite its cfg comment
-saying `(8812eu)`, and its `wifi_txpower = 3000` uses the EU positive convention where
-`master.cfg` says AU wants negative. **Unverified — check.** Companion is 2× `rtl88x2eu`
+`lsusb` says the **relay card is `0bda:8812` RTL8812AU** (driver `rtl88xxau_wfb`), not the
+`(8812eu)` its cfg comment claims. Its `wifi_txpower = 3000` uses the EU positive
+convention where `master.cfg` says AU wants negative — but measured 2026-08-08 this is
+not visibly broken: the startup `iw set txpower fixed 3000` succeeds, and both `iw dev`
+and `iwconfig` report 30 dBm, the BO regulatory cap for ch161.
+`rtw_tx_pwr_idx_override = 0`, so the AU manual-override path is not engaged; whether the
+normal path truly drives the PA to 30 dBm can only be settled by comparing drone-side
+RSSI at `-3000` vs `3000`.
+
+**The sign belongs to the card — flip it on swap.** The fleet runs both AU and EU; the
+relay is on AU now and moves to EU later. AU wants `-3000`, EU wants `3000`. Put the flip
+on the card-swap checklist along with the stale `(8812eu)` comment; a wrong txpower fails
+quietly as lost range, not as an error.
+
+Confirmed on hardware: `iwconfig` **echoes the configured value** (mBm → dBm), it does not
+measure radiated power — `3000` shows `Tx-Power=30 dBm`, `-3000` shows `Tx-Power=-30 dBm`.
+A displayed `-30 dBm` on an AU card is expected, not a fault: a literal −30 dBm is ~1 µW
+and the uplink would be dead, so the patched AU driver clearly routes the negative value
+through its own override path. Also note txpower is applied **only at service start**
+(`init_wlans`), so a hand-edited cfg looks "stuck" until the unit restarts — applying from
+G-Control restarts it via `wfb-cfg-apply`, which is why it takes effect there.
+
+Same shelf-life caveat applies to LDPC: any result measured against the current **AU**
+relay may not survive the move to EU, since AU is the end that might be making it work.
+
+Companion is 2× `rtl88x2eu`
 running video through `udp_proxy` (multi-card TX diversity already, separate from STBC).
 LDPC is still documented as 8812au-only in wfb-ng 25.4.27, so EU-only does not unlock it.
 
